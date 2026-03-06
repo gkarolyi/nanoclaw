@@ -10,3 +10,6 @@
 // telegram
 
 // whatsapp
+
+// zulip
+import './zulip.js';
