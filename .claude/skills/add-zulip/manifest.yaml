@@ -1,0 +1,18 @@
+skill: zulip
+version: 1.0.0
+description: "Zulip Bot API integration via REST long-polling"
+core_version: 0.1.0
+adds:
+  - src/channels/zulip.ts
+  - src/channels/zulip.test.ts
+modifies:
+  - src/channels/index.ts
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - ZULIP_BOT_EMAIL
+    - ZULIP_BOT_API_KEY
+    - ZULIP_SITE
+conflicts: []
+depends: []
+test: "npx vitest run src/channels/zulip.test.ts"
