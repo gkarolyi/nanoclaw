@@ -1,0 +1,26 @@
+skill: zulip
+version: 1.0.0
+description: "Zulip channel integration via REST API with topic threading"
+core_version: 0.1.0
+adds:
+  - src/channels/zulip.ts
+  - src/channels/zulip.test.ts
+modifies:
+  - src/channels/index.ts
+  - src/container-runner.ts
+  - src/types.ts
+  - src/db.ts
+  - src/db.test.ts
+  - src/index.ts
+  - container/agent-runner/src/index.ts
+  - container/agent-runner/src/ipc-mcp-stdio.ts
+  - .env.example
+structured:
+  npm_dependencies: {}
+  env_additions:
+    - ZULIP_SITE
+    - ZULIP_EMAIL
+    - ZULIP_API_KEY
+conflicts: []
+depends: []
+test: "npx vitest run src/channels/zulip.test.ts"
