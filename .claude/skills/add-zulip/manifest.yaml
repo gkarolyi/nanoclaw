@@ -1,5 +1,5 @@
 skill: zulip
-version: 1.0.0
+version: 1.1.0
 description: "Zulip Bot API integration via REST long-polling"
 core_version: 0.1.0
 adds:
@@ -7,6 +7,8 @@ adds:
   - src/channels/zulip.test.ts
 modifies:
   - src/channels/index.ts
+  - src/types.ts
+  - src/container-runner.ts
 structured:
   npm_dependencies: {}
   env_additions:

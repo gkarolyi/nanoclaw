@@ -200,6 +200,42 @@ Verify credentials:
 curl -s -u "BOT_EMAIL:API_KEY" https://YOUR-SITE/api/v1/users/me
 ```
 
+## Features
+
+### File Attachments
+
+The Zulip channel automatically detects and downloads file attachments from messages. When a user sends a file:
+
+1. The attachment is detected from the Zulip message content (markdown links to `/user_uploads/...`)
+2. The file is downloaded from the Zulip server using authenticated requests
+3. Files are stored in `/workspace/uploads/` with timestamped filenames
+4. The agent receives the message with an `attachments` array containing:
+   - `filename`: Original filename
+   - `path`: Local filesystem path (accessible to the agent)
+   - `url`: Original Zulip URL
+   - `size`: File size in bytes
+   - `mimeType`: Content type (if available)
+
+The agent can then read and process these files directly from the local filesystem.
+
+### Topic Search
+
+The Zulip channel provides a `searchTopicMessages()` method to retrieve messages from a specific topic within a stream:
+
+```typescript
+const messages = await zulipChannel.searchTopicMessages(
+  streamId,  // e.g., '42'
+  topic,     // e.g., 'project-updates'
+  limit,     // optional, defaults to 100
+);
+```
+
+This returns an array of message objects from the specified topic, enabling the agent to:
+- Review conversation history
+- Search for specific information within topics
+- Analyze topic-specific discussions
+
+
 ## After Setup
 
 If running `npm run dev` while the service is active:

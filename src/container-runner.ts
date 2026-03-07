@@ -173,6 +173,15 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Shared uploads directory for file attachments from channels
+  const uploadsDir = path.join(projectRoot, 'data', 'uploads');
+  fs.mkdirSync(uploadsDir, { recursive: true });
+  mounts.push({
+    hostPath: uploadsDir,
+    containerPath: '/workspace/uploads',
+    readonly: true, // Agent can read but not modify/delete uploads
+  });
+
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
   // groups. Recompiled on container startup via entrypoint.sh.

@@ -7,7 +7,10 @@ import {
   OnChatMetadata,
   OnInboundMessage,
   RegisteredGroup,
+  Attachment,
 } from '../types.js';
+import { promises as fs } from 'fs';
+import path from 'path';
 
 export interface ZulipChannelOpts {
   onMessage: OnInboundMessage;
@@ -36,7 +39,10 @@ export async function zulipApi(
   };
 
   let body: string | undefined;
-  if (data && (method === 'POST' || method === 'PATCH' || method === 'DELETE')) {
+  if (
+    data &&
+    (method === 'POST' || method === 'PATCH' || method === 'DELETE')
+  ) {
     headers['Content-Type'] = 'application/x-www-form-urlencoded';
     body = new URLSearchParams(data).toString();
   }
@@ -98,7 +104,11 @@ export class ZulipChannel implements Channel {
     this.abortController = new AbortController();
 
     logger.info(
-      { email: this.creds.email, userId: this.myUserId, name: this.botFullName },
+      {
+        email: this.creds.email,
+        userId: this.myUserId,
+        name: this.botFullName,
+      },
       'Zulip bot connected',
     );
     console.log(`\n  Zulip bot: ${this.botFullName} (${this.creds.email})`);
@@ -188,10 +198,7 @@ export class ZulipChannel implements Channel {
         }
 
         if (consecutiveErrors > 0) {
-          logger.info(
-            { errors: consecutiveErrors },
-            'Zulip poll recovered',
-          );
+          logger.info({ errors: consecutiveErrors }, 'Zulip poll recovered');
         }
         consecutiveErrors = 0;
 
@@ -199,7 +206,7 @@ export class ZulipChannel implements Channel {
           lastEventId = event.id;
 
           if (event.type === 'message') {
-            this.handleMessage(event.message);
+            await this.handleMessage(event.message);
           }
         }
       } catch (err: any) {
@@ -208,10 +215,7 @@ export class ZulipChannel implements Channel {
           continue;
         }
         if (err.retryAfterMs) {
-          logger.warn(
-            { retryAfterMs: err.retryAfterMs },
-            'Zulip rate limited',
-          );
+          logger.warn({ retryAfterMs: err.retryAfterMs }, 'Zulip rate limited');
           await new Promise((r) => setTimeout(r, err.retryAfterMs));
           consecutiveErrors++;
           continue;
@@ -225,15 +229,92 @@ export class ZulipChannel implements Channel {
     logger.info('Zulip poll loop exited');
   }
 
-  private handleMessage(msg: any): void {
+  /**
+   * Extract attachment URLs from message content.
+   * Zulip attachments appear as markdown links like [filename](/user_uploads/...)
+   */
+  private extractAttachmentUrls(content: string): Array<{ url: string; filename: string }> {
+    const attachments: Array<{ url: string; filename: string }> = [];
+    // Match markdown links with /user_uploads/ paths
+    const regex = /\[([^\]]+)\]\((\/user_uploads\/[^)]+)\)/g;
+    let match;
+    while ((match = regex.exec(content)) !== null) {
+      attachments.push({
+        filename: match[1],
+        url: match[2],
+      });
+    }
+    return attachments;
+  }
+
+  /**
+   * Download an attachment from Zulip server to local filesystem.
+   * Returns the Attachment object with local path.
+   */
+  private async downloadAttachment(
+    url: string,
+    filename: string,
+  ): Promise<Attachment | null> {
+    try {
+      const fullUrl = new URL(url, this.creds.site).toString();
+      const auth = Buffer.from(`${this.creds.email}:${this.creds.apiKey}`).toString('base64');
+
+      const response = await fetch(fullUrl, {
+        headers: {
+          Authorization: `Basic ${auth}`,
+        },
+      });
+
+      if (!response.ok) {
+        logger.error(
+          { url, status: response.status },
+          'Failed to download Zulip attachment',
+        );
+        return null;
+      }
+
+      // Ensure uploads directory exists (host path, will be mounted into container)
+      const uploadsDir = path.join(process.cwd(), 'data', 'uploads');
+      await fs.mkdir(uploadsDir, { recursive: true });
+
+      // Generate safe filename
+      const sanitizedFilename = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const timestamp = Date.now();
+      const localFilename = `${timestamp}_${sanitizedFilename}`;
+      const localPath = path.join(uploadsDir, localFilename);
+
+      // Download file
+      const buffer = Buffer.from(await response.arrayBuffer());
+      await fs.writeFile(localPath, buffer);
+
+      logger.info(
+        { url, localPath, size: buffer.length },
+        'Downloaded Zulip attachment',
+      );
+
+      // Return the container path (where the agent will see the file)
+      const containerPath = path.join('/workspace/uploads', localFilename);
+      
+      return {
+        filename,
+        path: containerPath,
+        url: fullUrl,
+        size: buffer.length,
+        mimeType: response.headers.get('content-type') || undefined,
+      };
+    } catch (err: any) {
+      logger.error({ url, err: err.message }, 'Error downloading attachment');
+      return null;
+    }
+  }
+
+  private async handleMessage(msg: any): Promise<void> {
     // Skip our own messages
     if (msg.sender_id === this.myUserId) return;
 
     const isStream = msg.type === 'stream';
     const streamId = isStream ? String(msg.stream_id) : null;
-    const chatJid = isStream
-      ? `zu:${streamId}`
-      : `zu:dm:${msg.sender_id}`;
+    const chatJid = isStream ? `zu:${streamId}` : `zu:dm:${msg.sender_id}`;
 
     const topic = isStream ? msg.subject : undefined;
     let content = stripHtml(msg.content);
@@ -248,9 +329,7 @@ export class ZulipChannel implements Channel {
     }
 
     // Determine chat name
-    const chatName = isStream
-      ? (msg.display_recipient || chatJid)
-      : senderName;
+    const chatName = isStream ? msg.display_recipient || chatJid : senderName;
 
     // Translate Zulip @**BotName** mentions to trigger format.
     // Zulip uses @**Full Name** for mentions. We translate the bot's mention
@@ -265,6 +344,16 @@ export class ZulipChannel implements Channel {
     // Prefix topic context for stream messages so the agent knows the topic
     if (isStream && topic) {
       content = `[topic: ${topic}] ${content}`;
+    }
+
+    // Extract and download attachments
+    const attachmentUrls = this.extractAttachmentUrls(msg.content);
+    const attachments: Attachment[] = [];
+    for (const { url, filename } of attachmentUrls) {
+      const attachment = await this.downloadAttachment(url, filename);
+      if (attachment) {
+        attachments.push(attachment);
+      }
     }
 
     // Store chat metadata for discovery
@@ -288,12 +377,70 @@ export class ZulipChannel implements Channel {
       content,
       timestamp,
       is_from_me: false,
+      attachments: attachments.length > 0 ? attachments : undefined,
     });
 
     logger.info(
       { chatJid, chatName, topic, sender: senderName },
       'Zulip message stored',
     );
+  }
+
+  /**
+   * Search for messages in a specific topic within a stream.
+   * Returns full message objects matching the search.
+   */
+  async searchTopicMessages(
+    streamId: string,
+    topic: string,
+    limit: number = 100,
+  ): Promise<Array<any>> {
+    if (!this.connected) {
+      logger.warn('Zulip not connected');
+      return [];
+    }
+
+    try {
+      // Construct narrow filter for stream and topic
+      const narrow = [
+        { operator: 'channel', operand: streamId },
+        { operator: 'topic', operand: topic },
+      ];
+
+      const params = new URLSearchParams({
+        narrow: JSON.stringify(narrow),
+        num_before: '0',
+        num_after: String(limit),
+        anchor: 'newest',
+      });
+
+      const result = await zulipApi(
+        this.creds,
+        `/messages?${params.toString()}`,
+        'GET',
+      );
+
+      if (result.result !== 'success') {
+        logger.error(
+          { streamId, topic, msg: result.msg },
+          'Failed to search Zulip topic',
+        );
+        return [];
+      }
+
+      logger.info(
+        { streamId, topic, count: result.messages?.length || 0 },
+        'Searched Zulip topic',
+      );
+
+      return result.messages || [];
+    } catch (err: any) {
+      logger.error(
+        { streamId, topic, err: err.message },
+        'Error searching Zulip topic',
+      );
+      return [];
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -310,12 +457,8 @@ export class ZulipChannel implements Channel {
         const topic = this.lastTopicByStream.get(streamId) || 'chat';
 
         // Get stream name from stream ID
-        const streamInfo = await zulipApi(
-          this.creds,
-          `/streams/${streamId}`,
-        );
-        const streamName =
-          streamInfo.stream?.name || streamId;
+        const streamInfo = await zulipApi(this.creds, `/streams/${streamId}`);
+        const streamName = streamInfo.stream?.name || streamId;
 
         // Zulip supports long messages (10k+), but split at 10000 for safety
         const MAX_LENGTH = 10000;
@@ -381,14 +524,15 @@ registerChannel('zulip', (opts: ChannelOpts) => {
     'ZULIP_BOT_API_KEY',
     'ZULIP_SITE',
   ]);
-  const email =
-    process.env.ZULIP_BOT_EMAIL || envVars.ZULIP_BOT_EMAIL || '';
+  const email = process.env.ZULIP_BOT_EMAIL || envVars.ZULIP_BOT_EMAIL || '';
   const apiKey =
     process.env.ZULIP_BOT_API_KEY || envVars.ZULIP_BOT_API_KEY || '';
   const site = process.env.ZULIP_SITE || envVars.ZULIP_SITE || '';
 
   if (!email || !apiKey || !site) {
-    logger.warn('Zulip: credentials not set (ZULIP_BOT_EMAIL, ZULIP_BOT_API_KEY, ZULIP_SITE)');
+    logger.warn(
+      'Zulip: credentials not set (ZULIP_BOT_EMAIL, ZULIP_BOT_API_KEY, ZULIP_SITE)',
+    );
     return null;
   }
 

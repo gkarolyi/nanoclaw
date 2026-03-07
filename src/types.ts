@@ -42,6 +42,14 @@ export interface RegisteredGroup {
   isMain?: boolean; // True for the main control group (no trigger, elevated privileges)
 }
 
+export interface Attachment {
+  filename: string;
+  path: string; // Local filesystem path where file is stored
+  url: string; // Original URL from the platform
+  size?: number; // File size in bytes
+  mimeType?: string;
+}
+
 export interface NewMessage {
   id: string;
   chat_jid: string;
@@ -51,6 +59,7 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  attachments?: Attachment[];
 }
 
 export interface ScheduledTask {
