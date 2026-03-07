@@ -220,6 +220,9 @@ function readSecrets(): Record<string, string> {
     'ANTHROPIC_API_KEY',
     'ANTHROPIC_BASE_URL',
     'ANTHROPIC_AUTH_TOKEN',
+    'ZULIP_SITE',
+    'ZULIP_EMAIL',
+    'ZULIP_API_KEY',
   ]);
 }
 

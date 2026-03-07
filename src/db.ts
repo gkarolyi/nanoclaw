@@ -32,6 +32,8 @@ function createSchema(database: Database.Database): void {
       timestamp TEXT,
       is_from_me INTEGER,
       is_bot_message INTEGER DEFAULT 0,
+      thread_id TEXT,
+      thread_name TEXT,
       PRIMARY KEY (id, chat_jid),
       FOREIGN KEY (chat_jid) REFERENCES chats(jid)
     );
@@ -102,6 +104,18 @@ function createSchema(database: Database.Database): void {
     database
       .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
       .run(`${ASSISTANT_NAME}:%`);
+  } catch {
+    /* column already exists */
+  }
+
+  // Add thread columns if they don't exist (migration for existing DBs)
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN thread_id TEXT`);
+  } catch {
+    /* column already exists */
+  }
+  try {
+    database.exec(`ALTER TABLE messages ADD COLUMN thread_name TEXT`);
   } catch {
     /* column already exists */
   }
@@ -262,7 +276,7 @@ export function setLastGroupSync(): void {
  */
 export function storeMessage(msg: NewMessage): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_id, thread_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -272,6 +286,8 @@ export function storeMessage(msg: NewMessage): void {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.thread_id ?? null,
+    msg.thread_name ?? null,
   );
 }
 
@@ -287,9 +303,11 @@ export function storeMessageDirect(msg: {
   timestamp: string;
   is_from_me: boolean;
   is_bot_message?: boolean;
+  thread_id?: string;
+  thread_name?: string;
 }): void {
   db.prepare(
-    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR REPLACE INTO messages (id, chat_jid, sender, sender_name, content, timestamp, is_from_me, is_bot_message, thread_id, thread_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     msg.id,
     msg.chat_jid,
@@ -299,6 +317,8 @@ export function storeMessageDirect(msg: {
     msg.timestamp,
     msg.is_from_me ? 1 : 0,
     msg.is_bot_message ? 1 : 0,
+    msg.thread_id ?? null,
+    msg.thread_name ?? null,
   );
 }
 
@@ -316,7 +336,7 @@ export function getNewMessages(
   // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, thread_id, thread_name
       FROM messages
       WHERE timestamp > ? AND chat_jid IN (${placeholders})
         AND is_bot_message = 0 AND content NOT LIKE ?
@@ -349,7 +369,7 @@ export function getMessagesSince(
   // Subquery takes the N most recent, outer query re-sorts chronologically.
   const sql = `
     SELECT * FROM (
-      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me
+      SELECT id, chat_jid, sender, sender_name, content, timestamp, is_from_me, thread_id, thread_name
       FROM messages
       WHERE chat_jid = ? AND timestamp > ?
         AND is_bot_message = 0 AND content NOT LIKE ?

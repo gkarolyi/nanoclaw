@@ -28,6 +28,8 @@ function store(overrides: {
   content: string;
   timestamp: string;
   is_from_me?: boolean;
+  thread_id?: string;
+  thread_name?: string;
 }) {
   storeMessage({
     id: overrides.id,
@@ -37,6 +39,8 @@ function store(overrides: {
     content: overrides.content,
     timestamp: overrides.timestamp,
     is_from_me: overrides.is_from_me ?? false,
+    thread_id: overrides.thread_id,
+    thread_name: overrides.thread_name,
   });
 }
 
@@ -65,6 +69,30 @@ describe('storeMessage', () => {
     expect(messages[0].sender).toBe('123@s.whatsapp.net');
     expect(messages[0].sender_name).toBe('Alice');
     expect(messages[0].content).toBe('hello world');
+  });
+
+  it('stores thread fields', () => {
+    storeChatMetadata('group@g.us', '2024-01-01T00:00:00.000Z');
+
+    store({
+      id: 'msg-thread',
+      chat_jid: 'group@g.us',
+      sender: '123@s.whatsapp.net',
+      sender_name: 'Alice',
+      content: 'topic message',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      thread_id: 'topic-a',
+      thread_name: 'Topic A',
+    });
+
+    const messages = getMessagesSince(
+      'group@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'Andy',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].thread_id).toBe('topic-a');
+    expect(messages[0].thread_name).toBe('Topic A');
   });
 
   it('filters out empty content', () => {

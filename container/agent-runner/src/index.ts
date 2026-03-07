@@ -414,6 +414,21 @@ async function runQuery(
     log(`Additional directories: ${extraDirs.join(', ')}`);
   }
 
+  const mcpEnv: Record<string, string> = {
+    NANOCLAW_CHAT_JID: containerInput.chatJid,
+    NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+    NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+  };
+  if (containerInput.secrets?.ZULIP_SITE) {
+    mcpEnv.ZULIP_SITE = containerInput.secrets.ZULIP_SITE;
+  }
+  if (containerInput.secrets?.ZULIP_EMAIL) {
+    mcpEnv.ZULIP_EMAIL = containerInput.secrets.ZULIP_EMAIL;
+  }
+  if (containerInput.secrets?.ZULIP_API_KEY) {
+    mcpEnv.ZULIP_API_KEY = containerInput.secrets.ZULIP_API_KEY;
+  }
+
   for await (const message of query({
     prompt: stream,
     options: {
@@ -442,11 +457,7 @@ async function runQuery(
         nanoclaw: {
           command: 'node',
           args: [mcpServerPath],
-          env: {
-            NANOCLAW_CHAT_JID: containerInput.chatJid,
-            NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
-            NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
-          },
+          env: mcpEnv,
         },
       },
       hooks: {
