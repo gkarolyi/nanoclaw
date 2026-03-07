@@ -78,6 +78,7 @@ export class ZulipChannel implements Channel {
 
   private opts: ZulipChannelOpts;
   private creds: ZulipCredentials;
+  private uploadsPath: string | undefined;
   private connected = false;
   private abortController: AbortController | null = null;
   private myUserId: number | null = null;
@@ -86,9 +87,14 @@ export class ZulipChannel implements Channel {
   // Track last topic per stream for replies
   private lastTopicByStream = new Map<string, string>();
 
-  constructor(creds: ZulipCredentials, opts: ZulipChannelOpts) {
+  constructor(
+    creds: ZulipCredentials,
+    opts: ZulipChannelOpts,
+    uploadsPath?: string,
+  ) {
     this.creds = creds;
     this.opts = opts;
+    this.uploadsPath = uploadsPath;
   }
 
   async connect(): Promise<void> {
@@ -250,7 +256,8 @@ export class ZulipChannel implements Channel {
   }
 
   /**
-   * Download an attachment from Zulip server to local filesystem.
+   * Download an attachment from Zulip server to local filesystem,
+   * or resolve its path if using direct mount.
    * Returns the Attachment object with local path.
    */
   private async downloadAttachment(
@@ -258,6 +265,34 @@ export class ZulipChannel implements Channel {
     filename: string,
   ): Promise<Attachment | null> {
     try {
+      // If uploadsPath is configured, we're using direct mount.
+      // Skip download and use the direct container path.
+      // The URL path matches the container path exactly (e.g., /user_uploads/2/a1/abc/file.pdf)
+      if (this.uploadsPath) {
+        // Validate URL format
+        if (!url.startsWith('/user_uploads/')) {
+          logger.error({ url }, 'Invalid Zulip upload URL format');
+          return null;
+        }
+
+        // In direct mount mode, the URL path IS the container path
+        const containerPath = url;
+        const fullUrl = new URL(url, this.creds.site).toString();
+
+        logger.info(
+          { url, containerPath, mode: 'direct-mount' },
+          'Using direct-mounted Zulip upload',
+        );
+
+        return {
+          filename,
+          path: containerPath,
+          url: fullUrl,
+          // Size and mimeType unknown without fetching, but they're optional
+        };
+      }
+
+      // Fallback: Download the file (default behavior)
       const fullUrl = new URL(url, this.creds.site).toString();
       const auth = Buffer.from(
         `${this.creds.email}:${this.creds.apiKey}`,
@@ -297,7 +332,7 @@ export class ZulipChannel implements Channel {
       );
 
       // Return the container path (where the agent will see the file)
-      const containerPath = path.join('/workspace/uploads', localFilename);
+      const containerPath = path.join('/user_uploads', localFilename);
 
       return {
         filename,
@@ -527,11 +562,14 @@ registerChannel('zulip', (opts: ChannelOpts) => {
     'ZULIP_BOT_EMAIL',
     'ZULIP_BOT_API_KEY',
     'ZULIP_SITE',
+    'ZULIP_UPLOADS_PATH',
   ]);
   const email = process.env.ZULIP_BOT_EMAIL || envVars.ZULIP_BOT_EMAIL || '';
   const apiKey =
     process.env.ZULIP_BOT_API_KEY || envVars.ZULIP_BOT_API_KEY || '';
   const site = process.env.ZULIP_SITE || envVars.ZULIP_SITE || '';
+  const uploadsPath =
+    process.env.ZULIP_UPLOADS_PATH || envVars.ZULIP_UPLOADS_PATH;
 
   if (!email || !apiKey || !site) {
     logger.warn(
@@ -540,5 +578,5 @@ registerChannel('zulip', (opts: ChannelOpts) => {
     return null;
   }
 
-  return new ZulipChannel({ email, apiKey, site }, opts);
+  return new ZulipChannel({ email, apiKey, site }, opts, uploadsPath);
 });

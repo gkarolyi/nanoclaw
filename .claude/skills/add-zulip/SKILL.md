@@ -204,19 +204,74 @@ curl -s -u "BOT_EMAIL:API_KEY" https://YOUR-SITE/api/v1/users/me
 
 ### File Attachments
 
-The Zulip channel automatically detects and downloads file attachments from messages. When a user sends a file:
+The Zulip channel supports two modes for handling file attachments:
+
+#### Mode 1: Download (Default)
+
+When a user sends a file:
 
 1. The attachment is detected from the Zulip message content (markdown links to `/user_uploads/...`)
 2. The file is downloaded from the Zulip server using authenticated requests
-3. Files are stored in `/workspace/uploads/` with timestamped filenames
+3. Files are stored in `data/uploads/` on the host and mounted to `/user_uploads/` in the container
 4. The agent receives the message with an `attachments` array containing:
    - `filename`: Original filename
-   - `path`: Local filesystem path (accessible to the agent)
+   - `path`: Container filesystem path (accessible to the agent)
    - `url`: Original Zulip URL
    - `size`: File size in bytes
    - `mimeType`: Content type (if available)
 
-The agent can then read and process these files directly from the local filesystem.
+#### Mode 2: Direct Mount (Zero-Copy)
+
+If Zulip is running via Docker on the same host, you can mount Zulip's uploads directory directly instead of downloading files. This provides:
+
+- **Zero-copy access** - No network download overhead
+- **Real-time availability** - Files accessible immediately when uploaded
+- **Reduced disk usage** - Files stored once, not duplicated
+- **Path alignment** - Container paths match Zulip's URL structure exactly
+
+To enable direct mount mode:
+
+1. Find your Zulip uploads path:
+   ```bash
+   # For homelab compose setup (../compose/zulip.yml), volume is homelab_zulip_data
+   docker volume inspect homelab_zulip_data --format '{{ .Mountpoint }}'
+   # Then append /uploads to the result
+   
+   # Or for other setups, find the Zulip volume:
+   docker volume ls | grep zulip
+   docker volume inspect <volume-name> --format '{{ .Mountpoint }}'
+   # The uploads are at: <mountpoint>/uploads
+   ```
+
+2. Add to `.env`:
+   ```bash
+   # For homelab compose setup:
+   ZULIP_UPLOADS_PATH=/var/lib/docker/volumes/homelab_zulip_data/_data/uploads
+   ```
+
+3. Sync to container environment:
+   ```bash
+   mkdir -p data/env && cp .env data/env/env
+   ```
+
+4. Rebuild and restart NanoClaw:
+   ```bash
+   npm run build
+   # Linux: systemctl --user restart nanoclaw
+   # macOS: launchctl kickstart -k gui/$(id -u)/com.nanoclaw
+   ```
+
+In direct mount mode, files are accessed directly from Zulip's storage without downloading. The container path matches the URL structure exactly:
+
+```
+Zulip URL:      /user_uploads/2/a1/abc123/filename.pdf
+Container path: /user_uploads/2/a1/abc123/filename.pdf
+```
+
+This makes it easy for agents to:
+- Understand file locations intuitively
+- Construct Zulip URLs from file paths
+- Link to files in responses
 
 ### Topic Search
 

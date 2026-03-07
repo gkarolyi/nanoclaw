@@ -174,13 +174,32 @@ function buildVolumeMounts(
   });
 
   // Shared uploads directory for file attachments from channels
-  const uploadsDir = path.join(projectRoot, 'data', 'uploads');
-  fs.mkdirSync(uploadsDir, { recursive: true });
-  mounts.push({
-    hostPath: uploadsDir,
-    containerPath: '/workspace/uploads',
-    readonly: true, // Agent can read but not modify/delete uploads
-  });
+  // If ZULIP_UPLOADS_PATH is set, mount Zulip's uploads directly (zero-copy).
+  // Otherwise, use local downloads directory (files are copied via download).
+  // Mount at /user_uploads to match Zulip's URL structure, making it easy for
+  // agents to construct URLs and understand file locations.
+  const envVars = readEnvFile(['ZULIP_UPLOADS_PATH']);
+  const zulipUploadsPath =
+    process.env.ZULIP_UPLOADS_PATH || envVars.ZULIP_UPLOADS_PATH;
+  if (zulipUploadsPath) {
+    logger.info(
+      { path: zulipUploadsPath },
+      'Mounting Zulip uploads directory directly',
+    );
+    mounts.push({
+      hostPath: zulipUploadsPath,
+      containerPath: '/user_uploads',
+      readonly: true, // Agent can read but not modify/delete uploads
+    });
+  } else {
+    const uploadsDir = path.join(projectRoot, 'data', 'uploads');
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    mounts.push({
+      hostPath: uploadsDir,
+      containerPath: '/user_uploads',
+      readonly: true, // Agent can read but not modify/delete uploads
+    });
+  }
 
   // Copy agent-runner source into a per-group writable location so agents
   // can customize it (add tools, change behavior) without affecting other
