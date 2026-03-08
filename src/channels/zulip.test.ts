@@ -214,7 +214,9 @@ describe('ZulipChannel', () => {
           chat_jid: 'zu:42',
           sender: '99',
           sender_name: 'Alice',
-          content: '[topic: greetings] Hello everyone',
+          content: 'Hello everyone',
+          thread_id: 'greetings',
+          thread_name: 'greetings',
           is_from_me: false,
         }),
       );
@@ -253,7 +255,9 @@ describe('ZulipChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'zu:42',
         expect.objectContaining({
-          content: '[topic: greetings] Hello world!',
+          content: 'Hello world!',
+          thread_id: 'greetings',
+          thread_name: 'greetings',
         }),
       );
     });
@@ -318,14 +322,16 @@ describe('ZulipChannel', () => {
       );
     });
 
-    it('prefixes topic context for stream messages', () => {
+    it('passes topic as thread metadata for stream messages', () => {
       const msg = createStreamMessage({ subject: 'deployment' });
       (channel as any).handleMessage(msg);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'zu:42',
         expect.objectContaining({
-          content: expect.stringContaining('[topic: deployment]'),
+          content: 'Hello everyone',
+          thread_id: 'deployment',
+          thread_name: 'deployment',
         }),
       );
     });
@@ -414,7 +420,9 @@ describe('ZulipChannel', () => {
       expect(opts.onMessage).toHaveBeenCalledWith(
         'zu:42',
         expect.objectContaining({
-          content: '[topic: greetings] plain message',
+          content: 'plain message',
+          thread_id: 'greetings',
+          thread_name: 'greetings',
         }),
       );
     });

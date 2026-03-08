@@ -1,12 +1,13 @@
 ---
 name: add-zulip
-description: Add Zulip as a channel. Uses REST API with long-polling for real-time events. No external npm dependencies required.
+description: Add Zulip as a channel with topic-level threading. Each Zulip topic becomes its own isolated conversation. Uses REST API with long-polling for real-time events.
 ---
 
 # Add Zulip Channel
 
 This skill adds Zulip support to NanoClaw using the skills engine for deterministic code changes, then walks through interactive setup.
 
+**Topic-Based Conversations:** Each topic within a registered Zulip stream automatically gets its own isolated conversation context and folder. When you register a stream, all topics within that stream will auto-register as child groups when messages arrive.
 ## Phase 1: Pre-flight
 
 ### Check if already applied
@@ -124,26 +125,14 @@ Tell the user:
 
 Wait for the user to provide the stream ID.
 
-The JID format is:
+The JID format for stream registration is:
 - Streams: `zu:{stream_id}` (e.g., `zu:42`)
 - DMs: `zu:dm:{user_id}` (e.g., `zu:dm:99`)
 
+Topics within a stream will auto-register with JIDs like `zu:{stream_id}:{topic_name}` when messages arrive.
 ### Register the chat
 
-For a main chat (responds to all messages):
-
-```typescript
-registerGroup("zu:<stream-id>", {
-  name: "<stream-name>",
-  folder: "zulip_main",
-  trigger: `@${ASSISTANT_NAME}`,
-  added_at: new Date().toISOString(),
-  requiresTrigger: false,
-  isMain: true,
-});
-```
-
-For additional chats (trigger-only):
+**Recommended:** Register the stream to respond to all messages in every topic:
 
 ```typescript
 registerGroup("zu:<stream-id>", {
@@ -151,7 +140,21 @@ registerGroup("zu:<stream-id>", {
   folder: "zulip_<stream-name>",
   trigger: `@${ASSISTANT_NAME}`,
   added_at: new Date().toISOString(),
-  requiresTrigger: true,
+  requiresTrigger: false,  // Responds to all messages
+});
+```
+
+Each topic will automatically get its own folder like `zulip_<stream-name>__<topic-slug>_<hash>` with isolated conversation history.
+
+**Alternative (trigger-only):** If you want the bot to only respond when mentioned:
+
+```typescript
+registerGroup("zu:<stream-id>", {
+  name: "<stream-name>",
+  folder: "zulip_<stream-name>",
+  trigger: `@${ASSISTANT_NAME}`,
+  added_at: new Date().toISOString(),
+  requiresTrigger: true,  // Only responds when @mentioned
 });
 ```
 
@@ -161,9 +164,14 @@ registerGroup("zu:<stream-id>", {
 
 Tell the user:
 
-> Send a message in your registered Zulip stream:
-> - For main chat: Any message works
-> - For non-main: `@Andy hello` or use `@**BotName**` mention
+> Send a message to any topic in your registered Zulip stream:
+> - If `requiresTrigger: false`: Any message will trigger a response
+> - If `requiresTrigger: true`: Use `@**BotName**` or `@Andy` to trigger
+>
+> The first message to a new topic will:
+> 1. Auto-register that topic as a new conversation
+> 2. Create a new folder under `groups/`
+> 3. Start a fresh conversation history for that topic
 >
 > The bot should respond within a few seconds.
 
@@ -180,18 +188,21 @@ tail -f logs/nanoclaw.log
 Check:
 1. `ZULIP_BOT_EMAIL`, `ZULIP_BOT_API_KEY`, `ZULIP_SITE` are set in `.env` AND synced to `data/env/env`
 2. Chat is registered: `sqlite3 store/messages.db "SELECT * FROM registered_groups WHERE jid LIKE 'zu:%'"`
-3. For non-main chats: message includes trigger pattern (use `@**BotName**` in Zulip)
+3. If `requiresTrigger: true`: message must include trigger pattern (use `@**BotName**` in Zulip)
 4. Service is running: `systemctl --user status nanoclaw` (Linux) or `launchctl list | grep nanoclaw` (macOS)
 
 ### Bot only responds to @mentions
 
-This is expected for non-main groups (requiresTrigger=true). Either:
-- Register as main (`isMain: true`)
-- Use `@**BotName**` to trigger
+This is expected when `requiresTrigger: true`. Either:
+- Set `requiresTrigger: false` when registering the stream
+- Use `@**BotName**` in Zulip to trigger the bot
 
-### Topic tracking
+### Topic-based conversations
 
-The bot replies to the same topic that last triggered it in each stream. If you change topics mid-conversation, the bot follows. Default topic is "chat" if none tracked yet.
+Each topic in a registered Zulip stream gets its own isolated conversation and folder. When you send a message to a topic:
+1. If it's the first message in that topic, a new group is auto-registered
+2. The conversation history is topic-specific — the bot doesn't see messages from other topics
+3. Each topic has its own folder under `groups/` with its own CLAUDE.md and memory
 
 ### API authentication errors
 

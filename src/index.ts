@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'crypto';
 
 import {
   ASSISTANT_NAME,
@@ -85,6 +86,66 @@ function loadState(): void {
 function saveState(): void {
   setRouterState('last_timestamp', lastTimestamp);
   setRouterState('last_agent_timestamp', JSON.stringify(lastAgentTimestamp));
+}
+
+const THREAD_FOLDER_MAX = 64;
+
+function buildThreadJid(chatJid: string, threadId?: string): string {
+  if (!threadId) return chatJid;
+  return `${chatJid}:${threadId}`;
+}
+
+function slugifyThreadName(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 32);
+  return slug || 'thread';
+}
+
+function threadHash(parent: RegisteredGroup, threadId: string): string {
+  return createHash('sha1')
+    .update(`${parent.folder}:${threadId}`)
+    .digest('hex')
+    .slice(0, 12);
+}
+
+function buildThreadFolder(
+  parent: RegisteredGroup,
+  threadId: string,
+  threadName?: string,
+): string {
+  const base = parent.folder;
+  const slug = threadName ? slugifyThreadName(threadName) : 'thread';
+  const hash = threadHash(parent, threadId);
+  const candidate = `${base}__${slug}_${hash}`;
+  if (candidate.length > THREAD_FOLDER_MAX) {
+    const excess = candidate.length - THREAD_FOLDER_MAX;
+    const truncatedSlug = slug.slice(0, Math.max(0, slug.length - excess));
+    const fallback = `${base}__${truncatedSlug}_${hash}`;
+    if (fallback.length > THREAD_FOLDER_MAX) {
+      return `${base.slice(0, THREAD_FOLDER_MAX - hash.length - 3)}__${hash}`;
+    }
+    return fallback.slice(0, THREAD_FOLDER_MAX);
+  }
+  return candidate;
+}
+
+function buildThreadGroup(
+  parent: RegisteredGroup,
+  threadId: string,
+  threadName?: string,
+): RegisteredGroup {
+  const display = threadName || threadId;
+  return {
+    ...parent,
+    name: `${parent.name} / ${display}`,
+    folder: buildThreadFolder(parent, threadId, threadName),
+    added_at: new Date().toISOString(),
+    isMain: false,
+  };
 }
 
 function registerGroup(jid: string, group: RegisteredGroup): void {
@@ -481,23 +542,60 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
+      const parentGroup = registeredGroups[chatJid];
+      const targetJid = buildThreadJid(chatJid, msg.thread_id);
+
+      if (msg.thread_id) {
+        if (!parentGroup) {
+          logger.debug(
+            { chatJid, threadId: msg.thread_id },
+            'Thread message from unregistered group',
+          );
+          return;
+        }
+        let threadGroup = registeredGroups[targetJid];
+        if (!threadGroup) {
+          threadGroup = buildThreadGroup(
+            parentGroup,
+            msg.thread_id,
+            msg.thread_name,
+          );
+          registerGroup(targetJid, threadGroup);
+        }
+        storeChatMetadata(
+          targetJid,
+          msg.timestamp,
+          threadGroup.name,
+          undefined,
+          true,
+        );
+      }
+
       // Sender allowlist drop mode: discard messages from denied senders before storing
-      if (!msg.is_from_me && !msg.is_bot_message && registeredGroups[chatJid]) {
+      if (
+        !msg.is_from_me &&
+        !msg.is_bot_message &&
+        registeredGroups[targetJid]
+      ) {
         const cfg = loadSenderAllowlist();
         if (
-          shouldDropMessage(chatJid, cfg) &&
-          !isSenderAllowed(chatJid, msg.sender, cfg)
+          shouldDropMessage(targetJid, cfg) &&
+          !isSenderAllowed(targetJid, msg.sender, cfg)
         ) {
           if (cfg.logDenied) {
             logger.debug(
-              { chatJid, sender: msg.sender },
+              { chatJid: targetJid, sender: msg.sender },
               'sender-allowlist: dropping message (drop mode)',
             );
           }
           return;
         }
       }
-      storeMessage(msg);
+      // Update chat_jid to topic-specific JID for thread messages
+      const messageToStore = msg.thread_id
+        ? { ...msg, chat_jid: targetJid }
+        : msg;
+      storeMessage(messageToStore);
     },
     onChatMetadata: (
       chatJid: string,

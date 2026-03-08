@@ -380,11 +380,6 @@ export class ZulipChannel implements Channel {
       }
     }
 
-    // Prefix topic context for stream messages so the agent knows the topic
-    if (isStream && topic) {
-      content = `[topic: ${topic}] ${content}`;
-    }
-
     // Extract and download attachments
     const attachmentUrls = this.extractAttachmentUrls(msg.content);
     const attachments: Attachment[] = [];
@@ -417,6 +412,8 @@ export class ZulipChannel implements Channel {
       timestamp,
       is_from_me: false,
       attachments: attachments.length > 0 ? attachments : undefined,
+      thread_id: topic || undefined,
+      thread_name: topic || undefined,
     });
 
     logger.info(
@@ -492,8 +489,13 @@ export class ZulipChannel implements Channel {
       const isStream = jid.startsWith('zu:') && !jid.startsWith('zu:dm:');
 
       if (isStream) {
-        const streamId = jid.replace(/^zu:/, '');
-        const topic = this.lastTopicByStream.get(streamId) || 'chat';
+        // Parse JID: zu:{streamId} or zu:{streamId}:{topic}
+        const parts = jid.split(':');
+        const streamId = parts[1];
+        const topic =
+          parts.length > 2
+            ? parts.slice(2).join(':')
+            : this.lastTopicByStream.get(streamId) || 'chat';
 
         // Get stream name from stream ID
         const streamInfo = await zulipApi(this.creds, `/streams/${streamId}`);

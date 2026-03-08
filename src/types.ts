@@ -60,6 +60,8 @@ export interface NewMessage {
   is_from_me?: boolean;
   is_bot_message?: boolean;
   attachments?: Attachment[];
+  thread_id?: string;
+  thread_name?: string;
 }
 
 export interface ScheduledTask {
