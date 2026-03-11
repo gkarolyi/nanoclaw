@@ -20,6 +20,76 @@ const chatJid = process.env.NANOCLAW_CHAT_JID!;
 const groupFolder = process.env.NANOCLAW_GROUP_FOLDER!;
 const isMain = process.env.NANOCLAW_IS_MAIN === '1';
 
+const zulipSite = process.env.ZULIP_SITE;
+const zulipEmail = process.env.ZULIP_EMAIL;
+const zulipApiKey = process.env.ZULIP_API_KEY;
+
+interface ZulipCreds {
+  site: string;
+  email: string;
+  apiKey: string;
+}
+
+function getZulipCreds(): ZulipCreds | null {
+  if (!zulipSite || !zulipEmail || !zulipApiKey) return null;
+  return { site: zulipSite, email: zulipEmail, apiKey: zulipApiKey };
+}
+
+async function zulipApi<T>(
+  creds: ZulipCreds,
+  endpoint: string,
+  method: 'GET' | 'POST',
+  data?: Record<string, unknown>,
+): Promise<T> {
+  const url = new URL(`/api/v1${endpoint}`, creds.site);
+  const auth = Buffer.from(`${creds.email}:${creds.apiKey}`).toString('base64');
+  const headers: Record<string, string> = {
+    Authorization: `Basic ${auth}`,
+    'User-Agent': 'nanoclaw-zulip-mcp/1.0',
+  };
+
+  let body: string | undefined;
+  if (data) {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(data)) {
+      if (value === undefined || value === null) continue;
+      if (Array.isArray(value) || typeof value === 'object') {
+        params.set(key, JSON.stringify(value));
+      } else {
+        params.set(key, String(value));
+      }
+    }
+    if (method === 'GET') {
+      for (const [key, value] of params.entries()) {
+        url.searchParams.set(key, value);
+      }
+    } else {
+      headers['Content-Type'] = 'application/x-www-form-urlencoded';
+      body = params.toString();
+    }
+  }
+
+  const response = await fetch(url.toString(), { method, headers, body });
+  const text = await response.text();
+  let parsed: any = null;
+  try {
+    parsed = text ? JSON.parse(text) : {};
+  } catch {
+    parsed = null;
+  }
+
+  if (!response.ok) {
+    const msg = parsed?.msg || text || `Zulip API error ${response.status}`;
+    throw new Error(msg);
+  }
+
+  if (parsed?.result && parsed.result !== 'success') {
+    throw new Error(parsed.msg || 'Zulip API error');
+  }
+
+  return parsed as T;
+}
+
 function writeIpcFile(dir: string, data: object): string {
   fs.mkdirSync(dir, { recursive: true });
 
@@ -330,6 +400,207 @@ Use available_groups.json to find the JID for a group. The folder name must be c
     return {
       content: [{ type: 'text' as const, text: `Group "${args.name}" registered. It will start receiving messages immediately.` }],
     };
+  },
+);
+
+server.tool(
+  'zulip_list_channels',
+  'List all Zulip channels visible to the configured bot.',
+  {},
+  async () => {
+    const creds = getZulipCreds();
+    if (!creds) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Zulip credentials are missing. Set ZULIP_SITE, ZULIP_EMAIL, and ZULIP_API_KEY.',
+          },
+        ],
+        isError: true,
+      };
+    }
+    try {
+      const response = await zulipApi<{ streams?: Array<{ stream_id: number; name: string; is_archived: boolean }> }>(creds, '/streams', 'GET');
+      const streams = response.streams || [];
+      const payload = streams.map((stream) => ({
+        id: stream.stream_id,
+        name: stream.name,
+        is_archived: stream.is_archived,
+      }));
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: payload.length > 0 ? JSON.stringify(payload, null, 2) : 'No channels found.',
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Zulip error: ${err instanceof Error ? err.message : String(err)}`
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'zulip_list_topics',
+  'List topics in a Zulip channel (by stream ID).',
+  {
+    stream_id: z.number().describe('Zulip stream/channel ID'),
+    limit: z.number().optional().describe('Optional limit on topics returned'),
+  },
+  async (args) => {
+    const creds = getZulipCreds();
+    if (!creds) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Zulip credentials are missing. Set ZULIP_SITE, ZULIP_EMAIL, and ZULIP_API_KEY.',
+          },
+        ],
+        isError: true,
+      };
+    }
+    try {
+      const response = await zulipApi<{ topics?: Array<{ name: string; max_id: number }> }>(creds, `/users/me/${args.stream_id}/topics`, 'GET', { allow_empty_topic_name: true });
+      const topics = response.topics || [];
+      const limited = typeof args.limit === 'number' ? topics.slice(0, Math.max(args.limit, 0)) : topics;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: limited.length > 0 ? JSON.stringify(limited, null, 2) : 'No topics found.',
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Zulip error: ${err instanceof Error ? err.message : String(err)}`
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'zulip_search_topics',
+  'Search topics by name in a Zulip channel (by stream ID).',
+  {
+    stream_id: z.number().describe('Zulip stream/channel ID'),
+    query: z.string().describe('Case-insensitive substring to match topic names'),
+    limit: z.number().optional().describe('Optional limit on topics returned'),
+  },
+  async (args) => {
+    const creds = getZulipCreds();
+    if (!creds) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Zulip credentials are missing. Set ZULIP_SITE, ZULIP_EMAIL, and ZULIP_API_KEY.',
+          },
+        ],
+        isError: true,
+      };
+    }
+    try {
+      const response = await zulipApi<{ topics?: Array<{ name: string; max_id: number }> }>(creds, `/users/me/${args.stream_id}/topics`, 'GET', { allow_empty_topic_name: true });
+      const topics = response.topics || [];
+      const query = args.query.toLowerCase();
+      const filtered = topics.filter((topic) => topic.name.toLowerCase().includes(query));
+      const limited = typeof args.limit === 'number' ? filtered.slice(0, Math.max(args.limit, 0)) : filtered;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: limited.length > 0 ? JSON.stringify(limited, null, 2) : 'No matching topics found.',
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Zulip error: ${err instanceof Error ? err.message : String(err)}`
+          },
+        ],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'zulip_search_messages',
+  'Search Zulip messages using the Zulip search query syntax.',
+  {
+    query: z.string().describe('Zulip search query, e.g. "stream:general topic:standup"'),
+    num_results: z.number().optional().describe('Number of messages to return (default 20, max 200)'),
+  },
+  async (args) => {
+    const creds = getZulipCreds();
+    if (!creds) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: 'Zulip credentials are missing. Set ZULIP_SITE, ZULIP_EMAIL, and ZULIP_API_KEY.',
+          },
+        ],
+        isError: true,
+      };
+    }
+    try {
+      const limit = Math.min(Math.max(args.num_results ?? 20, 1), 200);
+      const response = await zulipApi<{ messages?: Array<{ id: number; sender_full_name?: string; sender_email?: string; display_recipient?: string | { id: number; email: string }[]; subject?: string; content: string }> }>(creds, '/messages', 'GET', {
+        anchor: 'newest',
+        num_before: limit,
+        num_after: 0,
+        apply_markdown: false,
+        narrow: [{ operator: 'search', operand: args.query }],
+      });
+      const messages = response.messages || [];
+      const payload = messages.map((msg) => ({
+        id: msg.id,
+        sender: msg.sender_full_name || msg.sender_email || 'unknown',
+        stream: typeof msg.display_recipient === 'string' ? msg.display_recipient : 'private',
+        topic: msg.subject || '',
+        content: msg.content,
+      }));
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: payload.length > 0 ? JSON.stringify(payload, null, 2) : 'No messages found.',
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Zulip error: ${err instanceof Error ? err.message : String(err)}`
+          },
+        ],
+        isError: true,
+      };
+    }
   },
 );
 

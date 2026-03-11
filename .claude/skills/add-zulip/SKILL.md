@@ -1,6 +1,6 @@
 ---
 name: add-zulip
-description: Add Zulip as a channel with topic-level threading. Each Zulip topic becomes its own isolated conversation. Uses REST API with long-polling for real-time events.
+description: Add Zulip as a channel with topic-level threading and MCP tools. Each Zulip topic becomes its own isolated conversation. Includes agent tools for searching channels, topics, and messages.
 ---
 
 # Add Zulip Channel
@@ -300,6 +300,47 @@ This returns an array of message objects from the specified topic, enabling the 
 - Review conversation history
 - Search for specific information within topics
 - Analyze topic-specific discussions
+
+
+### Agent MCP Tools
+
+The agent has access to four Zulip-specific MCP tools for exploring and searching Zulip content:
+
+**`zulip_list_channels`** - List all Zulip channels/streams the bot can see:
+```typescript
+{}
+```
+
+**`zulip_list_topics`** - List topics in a specific channel:
+```typescript
+{
+  stream_id: 3,      // Zulip stream/channel ID
+  limit: 20          // Optional: limit results
+}
+```
+
+**`zulip_search_topics`** - Search topics by name within a channel:
+```typescript
+{
+  stream_id: 3,
+  query: "standup",  // Case-insensitive substring match
+  limit: 10
+}
+```
+
+**`zulip_search_messages`** - Search messages using Zulip query syntax:
+```typescript
+{
+  query: "stream:general topic:standup",  // Zulip search syntax
+  num_results: 50                          // Default 20, max 200
+}
+```
+
+These tools enable the agent to:
+- Discover available channels and topics
+- Search across different topics and streams
+- Find specific messages or discussions
+- Navigate the Zulip organization structure
 
 
 ## After Setup
