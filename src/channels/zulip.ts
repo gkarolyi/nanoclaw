@@ -1,4 +1,6 @@
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
+import { setRegisteredGroup } from '../db.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -11,7 +13,6 @@ import {
 } from '../types.js';
 import { promises as fs } from 'fs';
 import path from 'path';
-
 export interface ZulipChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
@@ -393,12 +394,64 @@ export class ZulipChannel implements Channel {
     // Store chat metadata for discovery
     this.opts.onChatMetadata(chatJid, timestamp, chatName, 'zulip', isStream);
 
+    // Auto-register topics when mentioned
+    let group = this.opts.registeredGroups()[chatJid];
+    if (!group && isStream && topic) {
+      // Check if bot was mentioned
+      const wasMentioned =
+        this.botFullName && msg.content.includes(`@**${this.botFullName}**`);
+      if (wasMentioned) {
+        // Auto-register this topic
+        const streamName = msg.display_recipient || `stream_${streamId}`;
+        const sanitizedStream = streamName
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-');
+        const sanitizedTopic = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+        const hash = chatJid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
+        const folderName =
+          `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
+            0,
+            64,
+          );
+
+        const newGroup: RegisteredGroup = {
+          name: `${streamName} / ${topic}`,
+          folder: folderName,
+          trigger: `@${ASSISTANT_NAME}`,
+          added_at: new Date().toISOString(),
+          requiresTrigger: true,
+        };
+
+        setRegisteredGroup(chatJid, newGroup);
+
+        // Create group folder
+        const groupPath = resolveGroupFolderPath(folderName);
+        try {
+          await fs.mkdir(groupPath, { recursive: true });
+          await fs.writeFile(
+            path.join(groupPath, 'CLAUDE.md'),
+            `# ${newGroup.name}\n\nThis topic was auto-registered when ${this.botFullName} was mentioned.\n`,
+          );
+        } catch (err: any) {
+          logger.error(
+            { err: err.message, folder: folderName },
+            'Failed to create group folder',
+          );
+        }
+
+        group = newGroup;
+        logger.info(
+          { chatJid, chatName, topic, folder: folderName },
+          'Auto-registered Zulip topic on mention',
+        );
+      }
+    }
+
     // Only deliver full message for registered groups
-    const group = this.opts.registeredGroups()[chatJid];
     if (!group) {
       logger.debug(
         { chatJid, chatName },
-        'Message from unregistered Zulip chat',
+        'Message from unregistered Zulip chat (not mentioned)',
       );
       return;
     }
