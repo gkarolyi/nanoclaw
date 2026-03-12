@@ -1,6 +1,4 @@
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
-import { setRegisteredGroup } from '../db.js';
-import { resolveGroupFolderPath } from '../group-folder.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
 import { registerChannel, ChannelOpts } from './registry.js';
@@ -354,9 +352,14 @@ export class ZulipChannel implements Channel {
 
     const isStream = msg.type === 'stream';
     const streamId = isStream ? String(msg.stream_id) : null;
-    const chatJid = isStream ? `zu:${streamId}` : `zu:dm:${msg.sender_id}`;
-
     const topic = isStream ? msg.subject : undefined;
+    // chatJid format: 'zu:streamId:topic' for topics, 'zu:streamId' for stream-level, 'zu:dm:userId' for DMs
+    const chatJid = isStream
+      ? topic
+        ? `zu:${streamId}:${topic}`
+        : `zu:${streamId}`
+      : `zu:dm:${msg.sender_id}`;
+
     let content = stripHtml(msg.content);
     const timestamp = new Date(msg.timestamp * 1000).toISOString();
     const senderName = msg.sender_full_name || msg.sender_email || 'Unknown';
@@ -394,67 +397,8 @@ export class ZulipChannel implements Channel {
     // Store chat metadata for discovery
     this.opts.onChatMetadata(chatJid, timestamp, chatName, 'zulip', isStream);
 
-    // Auto-register topics when mentioned
-    let group = this.opts.registeredGroups()[chatJid];
-    if (!group && isStream && topic) {
-      // Check if bot was mentioned
-      const wasMentioned =
-        this.botFullName && msg.content.includes(`@**${this.botFullName}**`);
-      if (wasMentioned) {
-        // Auto-register this topic
-        const streamName = msg.display_recipient || `stream_${streamId}`;
-        const sanitizedStream = streamName
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-');
-        const sanitizedTopic = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-        const hash = chatJid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
-        const folderName =
-          `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
-            0,
-            64,
-          );
-
-        const newGroup: RegisteredGroup = {
-          name: `${streamName} / ${topic}`,
-          folder: folderName,
-          trigger: `@${ASSISTANT_NAME}`,
-          added_at: new Date().toISOString(),
-          requiresTrigger: true,
-        };
-
-        setRegisteredGroup(chatJid, newGroup);
-
-        // Create group folder
-        const groupPath = resolveGroupFolderPath(folderName);
-        try {
-          await fs.mkdir(groupPath, { recursive: true });
-          await fs.writeFile(
-            path.join(groupPath, 'CLAUDE.md'),
-            `# ${newGroup.name}\n\nThis topic was auto-registered when ${this.botFullName} was mentioned.\n`,
-          );
-        } catch (err: any) {
-          logger.error(
-            { err: err.message, folder: folderName },
-            'Failed to create group folder',
-          );
-        }
-
-        group = newGroup;
-        logger.info(
-          { chatJid, chatName, topic, folder: folderName },
-          'Auto-registered Zulip topic on mention',
-        );
-      }
-    }
-
-    // Only deliver full message for registered groups
-    if (!group) {
-      logger.debug(
-        { chatJid, chatName },
-        'Message from unregistered Zulip chat (not mentioned)',
-      );
-      return;
-    }
+    // Note: Auto-registration happens in orchestrator's onMessage callback
+    // We always deliver messages, even from unregistered topics
 
     this.opts.onMessage(chatJid, {
       id: msgId,
@@ -465,8 +409,7 @@ export class ZulipChannel implements Channel {
       timestamp,
       is_from_me: false,
       attachments: attachments.length > 0 ? attachments : undefined,
-      thread_id: topic || undefined,
-      thread_name: topic || undefined,
+      // Zulip topics are the thread level - don't pass thread_id (would cause nesting)
     });
 
     logger.info(

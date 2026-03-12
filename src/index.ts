@@ -621,6 +621,42 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
+      // Auto-register Zulip topics when mentioned
+      if (
+        !registeredGroups[chatJid] &&
+        chatJid.startsWith('zu:') &&
+        !chatJid.startsWith('zu:dm:')
+      ) {
+        const parts = chatJid.split(':');
+        if (parts.length > 2 && TRIGGER_PATTERN.test(msg.content)) {
+          const streamId = parts[1];
+          const topic = parts.slice(2).join(':');
+          const streamName = `stream_${streamId}`;
+          const sanitizedStream = streamName
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-');
+          const sanitizedTopic = topic
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-');
+          const hash = chatJid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
+          const folderName =
+            `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
+              0,
+              64,
+            );
+          registerGroup(chatJid, {
+            name: `${streamName} / ${topic}`,
+            folder: folderName,
+            trigger: `@${ASSISTANT_NAME}`,
+            added_at: new Date().toISOString(),
+            requiresTrigger: true,
+          });
+        } else if (!registeredGroups[chatJid]) {
+          // Not registered and not auto-registering, skip
+          return;
+        }
+      }
+
       const parentGroup = registeredGroups[chatJid];
       const targetJid = buildThreadJid(chatJid, msg.thread_id);
 
