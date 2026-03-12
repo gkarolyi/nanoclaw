@@ -541,6 +541,54 @@ export class ZulipChannel implements Channel {
     }
   }
 
+  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+    if (!this.connected) {
+      logger.warn('Zulip not connected');
+      return;
+    }
+
+    try {
+      const op = isTyping ? 'start' : 'stop';
+      const isStream = jid.startsWith('zu:') && !jid.startsWith('zu:dm:');
+
+      if (isStream) {
+        // Parse JID: zu:{streamId} or zu:{streamId}:{topic}
+        const parts = jid.split(':');
+        const streamId = parts[1];
+        const topic =
+          parts.length > 2
+            ? parts.slice(2).join(':')
+            : this.lastTopicByStream.get(streamId) || 'chat';
+
+        await zulipApi(this.creds, '/typing', 'POST', {
+          op,
+          type: 'stream',
+          stream_id: streamId,
+          topic,
+        });
+      } else {
+        // DM: zu:dm:{userId}
+        const userId = jid.replace(/^zu:dm:/, '');
+
+        await zulipApi(this.creds, '/typing', 'POST', {
+          op,
+          type: 'direct',
+          to: JSON.stringify([parseInt(userId, 10)]),
+        });
+      }
+
+      logger.debug(
+        { jid, isTyping },
+        `Zulip typing indicator ${isTyping ? 'started' : 'stopped'}`,
+      );
+    } catch (err: any) {
+      logger.error(
+        { jid, isTyping, err: err.message },
+        'Failed to set Zulip typing indicator',
+      );
+    }
+  }
+
   isConnected(): boolean {
     return this.connected;
   }

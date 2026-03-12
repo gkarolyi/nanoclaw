@@ -96,6 +96,15 @@ describe('ZulipChannel', () => {
     global.fetch = originalFetch;
   });
 
+  // Helper to create a connected channel without starting the poll loop
+  function createConnectedChannel(): ZulipChannel {
+    const channel = new ZulipChannel(testCreds, createTestOpts());
+    (channel as any).connected = true;
+    (channel as any).myUserId = 123;
+    (channel as any).botFullName = 'Andy Bot';
+    return channel;
+  }
+
   // --- Connection lifecycle ---
 
   describe('connection lifecycle', () => {
@@ -432,15 +441,6 @@ describe('ZulipChannel', () => {
   // These tests create channels without connect() to avoid background poll interference.
 
   describe('sendMessage', () => {
-    function createConnectedChannel(): ZulipChannel {
-      // Manually set internal state without starting the poll loop
-      const channel = new ZulipChannel(testCreds, createTestOpts());
-      (channel as any).connected = true;
-      (channel as any).myUserId = 123;
-      (channel as any).botFullName = 'Andy Bot';
-      return channel;
-    }
-
     it('sends stream message to correct stream and topic', async () => {
       const channel = createConnectedChannel();
       (channel as any).lastTopicByStream.set('42', 'greetings');
@@ -543,6 +543,105 @@ describe('ZulipChannel', () => {
 
       // 1 stream info call + 2 message sends
       expect((global.fetch as any).mock.calls.length).toBe(3);
+    });
+  });
+
+  // --- setTyping ---
+
+  describe('setTyping', () => {
+    it('sends typing start for stream with tracked topic', async () => {
+      const channel = createConnectedChannel();
+      (channel as any).lastTopicByStream.set('42', 'greetings');
+
+      (global.fetch as any).mockResolvedValueOnce({
+        json: () => Promise.resolve({ result: 'success' }),
+      });
+
+      await channel.setTyping('zu:42', true);
+
+      const call = (global.fetch as any).mock.calls[0];
+      expect(call[0]).toContain('/typing');
+      expect(call[1].body).toContain('op=start');
+      expect(call[1].body).toContain('type=stream');
+      expect(call[1].body).toContain('stream_id=42');
+      expect(call[1].body).toContain('topic=greetings');
+    });
+
+    it('sends typing stop for stream', async () => {
+      const channel = createConnectedChannel();
+      (channel as any).lastTopicByStream.set('42', 'greetings');
+
+      (global.fetch as any).mockResolvedValueOnce({
+        json: () => Promise.resolve({ result: 'success' }),
+      });
+
+      await channel.setTyping('zu:42', false);
+
+      const call = (global.fetch as any).mock.calls[0];
+      expect(call[0]).toContain('/typing');
+      expect(call[1].body).toContain('op=stop');
+      expect(call[1].body).toContain('type=stream');
+    });
+
+    it('sends typing start for DM', async () => {
+      const channel = createConnectedChannel();
+
+      (global.fetch as any).mockResolvedValueOnce({
+        json: () => Promise.resolve({ result: 'success' }),
+      });
+
+      await channel.setTyping('zu:dm:99', true);
+
+      const call = (global.fetch as any).mock.calls[0];
+      expect(call[0]).toContain('/typing');
+      expect(call[1].body).toContain('op=start');
+      expect(call[1].body).toContain('type=direct');
+      expect(call[1].body).toContain('to=%5B99%5D'); // URL-encoded [99]
+    });
+
+    it('uses default topic "chat" when no topic tracked', async () => {
+      const channel = createConnectedChannel();
+
+      (global.fetch as any).mockResolvedValueOnce({
+        json: () => Promise.resolve({ result: 'success' }),
+      });
+
+      await channel.setTyping('zu:42', true);
+
+      const call = (global.fetch as any).mock.calls[0];
+      expect(call[1].body).toContain('topic=chat');
+    });
+
+    it('handles typing API failure gracefully', async () => {
+      const channel = createConnectedChannel();
+
+      (global.fetch as any).mockRejectedValueOnce(new Error('Network error'));
+
+      await expect(
+        channel.setTyping('zu:dm:99', true),
+      ).resolves.toBeUndefined();
+    });
+
+    it('does nothing when not connected', async () => {
+      const channel = new ZulipChannel(testCreds, createTestOpts());
+
+      await channel.setTyping('zu:42', true);
+
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+
+    it('parses JID with topic correctly', async () => {
+      const channel = createConnectedChannel();
+
+      (global.fetch as any).mockResolvedValueOnce({
+        json: () => Promise.resolve({ result: 'success' }),
+      });
+
+      await channel.setTyping('zu:42:custom-topic', true);
+
+      const call = (global.fetch as any).mock.calls[0];
+      expect(call[1].body).toContain('stream_id=42');
+      expect(call[1].body).toContain('topic=custom-topic');
     });
   });
 
