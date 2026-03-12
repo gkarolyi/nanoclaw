@@ -9,6 +9,7 @@ import {
   RegisteredGroup,
   Attachment,
 } from '../types.js';
+import { getLastZulipMessageTimestamp } from '../db.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 export interface ZulipChannelOpts {
@@ -125,6 +126,63 @@ export class ZulipChannel implements Channel {
     });
   }
 
+  /**
+   * Get the timestamp of the last message we processed, for recovery
+   */
+  private getLastMessageTimestamp(): number {
+    const lastTs = getLastZulipMessageTimestamp();
+    if (lastTs !== null) {
+      return lastTs;
+    }
+    // Default: start from 5 minutes ago to avoid fetching entire history
+    return Math.floor((Date.now() - 5 * 60 * 1000) / 1000);
+  }
+
+  /**
+   * Fetch and process missed messages since the given timestamp
+   */
+  private async catchUpMissedMessages(sinceTimestamp: number): Promise<void> {
+    try {
+      logger.info({ sinceTimestamp }, 'Catching up on missed Zulip messages');
+
+      const result = await zulipApi(
+        this.creds,
+        `/messages?anchor=newest&num_before=1000&num_after=0&narrow=${encodeURIComponent(JSON.stringify([]))}`,
+      );
+
+      if (result.result !== 'success' || !result.messages) {
+        logger.warn('Failed to fetch message history for catch-up');
+        return;
+      }
+
+      // Filter messages since our last timestamp and not from ourselves
+      const missedMessages = result.messages.filter(
+        (msg: any) =>
+          msg.timestamp > sinceTimestamp && msg.sender_id !== this.myUserId,
+      );
+
+      if (missedMessages.length === 0) {
+        logger.info('No missed messages to catch up');
+        return;
+      }
+
+      logger.info(
+        { count: missedMessages.length },
+        'Processing missed Zulip messages',
+      );
+
+      // Process messages in chronological order
+      missedMessages.sort((a: any, b: any) => a.timestamp - b.timestamp);
+      for (const msg of missedMessages) {
+        await this.handleMessage(msg);
+      }
+
+      logger.info('Finished catching up on missed messages');
+    } catch (err: any) {
+      logger.error({ err: err.message }, 'Error during message catch-up');
+    }
+  }
+
   private async pollLoop(): Promise<void> {
     // Register event queue
     const registerResult = await zulipApi(this.creds, '/register', 'POST', {
@@ -142,20 +200,25 @@ export class ZulipChannel implements Channel {
     let queueId = registerResult.queue_id;
     let lastEventId = registerResult.last_event_id;
 
+    // Catch up on any messages that arrived while we were down
+    const lastTs = this.getLastMessageTimestamp();
+    await this.catchUpMissedMessages(lastTs);
     const POLL_TIMEOUT_MS = 90_000;
     let consecutiveErrors = 0;
-    const MAX_CONSECUTIVE_ERRORS = 20;
 
     const backoff = async (errors: number) => {
       const ms = Math.min(5000 * Math.pow(2, errors - 1), 120_000);
-      logger.info(
-        { ms, errors, max: MAX_CONSECUTIVE_ERRORS },
-        'Zulip backing off',
-      );
+      logger.info({ ms, errors }, 'Zulip backing off');
       await new Promise((r) => setTimeout(r, ms));
     };
 
-    const reRegister = async (): Promise<boolean> => {
+    const reRegister = async (catchUp: boolean = false): Promise<boolean> => {
+      if (catchUp) {
+        // Fetch missed messages before re-registering
+        const lastTs = this.getLastMessageTimestamp();
+        await this.catchUpMissedMessages(lastTs);
+      }
+
       const reReg = await zulipApi(this.creds, '/register', 'POST', {
         event_types: JSON.stringify(['message']),
       });
@@ -170,14 +233,6 @@ export class ZulipChannel implements Channel {
     };
 
     while (this.connected && !this.abortController?.signal.aborted) {
-      if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
-        logger.error(
-          { errors: consecutiveErrors },
-          'Zulip too many consecutive errors, stopping poller',
-        );
-        return;
-      }
-
       try {
         const qs = `queue_id=${encodeURIComponent(queueId)}&last_event_id=${lastEventId}&dont_block=false`;
         const result = await zulipApi(
@@ -192,7 +247,9 @@ export class ZulipChannel implements Channel {
           consecutiveErrors++;
           if (String(result.msg).includes('BAD_EVENT_QUEUE_ID')) {
             logger.warn('Zulip queue expired, re-registering...');
-            if (!(await reRegister())) {
+            // Catch up if we've had multiple errors (indicating a longer outage)
+            const shouldCatchUp = consecutiveErrors >= 3;
+            if (!(await reRegister(shouldCatchUp))) {
               await backoff(consecutiveErrors);
             }
           } else {

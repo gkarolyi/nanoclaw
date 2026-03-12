@@ -381,6 +381,22 @@ export function getMessagesSince(
     .all(chatJid, sinceTimestamp, `${botPrefix}:%`, limit) as NewMessage[];
 }
 
+/**
+ * Get the timestamp of the last message from Zulip chats (for recovery)
+ */
+export function getLastZulipMessageTimestamp(): number | null {
+  const result = db
+    .prepare(
+      `SELECT MAX(timestamp) as last_ts FROM messages WHERE chat_jid LIKE 'zu:%'`,
+    )
+    .get() as { last_ts: string | null };
+
+  if (result?.last_ts) {
+    return new Date(result.last_ts).getTime() / 1000; // Convert to Unix timestamp
+  }
+  return null;
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
 ): void {
