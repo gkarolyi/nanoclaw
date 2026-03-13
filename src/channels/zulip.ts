@@ -575,7 +575,7 @@ export class ZulipChannel implements Channel {
     try {
       // Construct narrow filter for stream and topic
       const narrow = [
-        { operator: 'channel', operand: streamId },
+        { operator: 'channel', operand: parseInt(streamId, 10) },
         { operator: 'topic', operand: topic },
       ];
 

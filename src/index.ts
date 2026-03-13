@@ -273,6 +273,48 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
         );
       },
+      chatJid,
+      triggerBackfill: async () => {
+        // Check if this is a Zulip topic
+        if (!chatJid.startsWith('zu:') || chatJid.startsWith('zu:dm:')) {
+          return {
+            success: false,
+            message: 'Backfill is only supported for Zulip topics.',
+          };
+        }
+
+        const parts = chatJid.split(':');
+        if (parts.length < 3) {
+          return {
+            success: false,
+            message:
+              'Backfill requires a topic. Use /backfill in a specific topic.',
+          };
+        }
+
+        // Call backfillTopicHistory on the Zulip channel
+        if (channel && 'backfillTopicHistory' in channel) {
+          try {
+            await (channel as any).backfillTopicHistory(chatJid);
+            return {
+              success: true,
+              message:
+                'Topic history backfilled successfully. Previous messages are now available in the conversation context.',
+            };
+          } catch (err: any) {
+            logger.error({ chatJid, err: err.message }, 'Backfill failed');
+            return {
+              success: false,
+              message: `Backfill failed: ${err.message}`,
+            };
+          }
+        }
+
+        return {
+          success: false,
+          message: 'Backfill is not available for this channel.',
+        };
+      },
     },
   });
   if (cmdResult.handled) return cmdResult.success;

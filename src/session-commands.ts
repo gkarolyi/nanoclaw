@@ -12,6 +12,7 @@ export function extractSessionCommand(
   let text = content.trim();
   text = text.replace(triggerPattern, '').trim();
   if (text === '/compact') return '/compact';
+  if (text === '/backfill') return '/backfill';
   return null;
 }
 
@@ -45,6 +46,10 @@ export interface SessionCommandDeps {
   formatMessages: (msgs: NewMessage[], timezone: string) => string;
   /** Whether the denied sender would normally be allowed to interact (for denial messages). */
   canSenderInteract: (msg: NewMessage) => boolean;
+  /** Chat JID for the current group. */
+  chatJid: string;
+  /** Trigger backfill for Zulip topics. */
+  triggerBackfill?: () => Promise<{ success: boolean; message: string }>;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -95,6 +100,27 @@ export async function handleSessionCommand(opts: {
     }
     deps.advanceCursor(cmdMsg.timestamp);
     return { handled: true, success: true };
+  }
+
+  // Handle /backfill specially - doesn't need agent processing
+  if (command === '/backfill') {
+    logger.info({ group: groupName }, 'Backfill command');
+    await deps.setTyping(true);
+
+    if (!deps.triggerBackfill) {
+      await deps.sendMessage(
+        'Backfill is not supported for this channel type.',
+      );
+      deps.advanceCursor(cmdMsg.timestamp);
+      await deps.setTyping(false);
+      return { handled: true, success: true };
+    }
+
+    const result = await deps.triggerBackfill();
+    await deps.sendMessage(result.message);
+    deps.advanceCursor(cmdMsg.timestamp);
+    await deps.setTyping(false);
+    return { handled: true, success: result.success };
   }
 
   // AUTHORIZED: process pre-compact messages first, then run the command

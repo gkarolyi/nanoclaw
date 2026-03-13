@@ -85,6 +85,7 @@ function makeDeps(
     advanceCursor: vi.fn(),
     formatMessages: vi.fn().mockReturnValue('<formatted>'),
     canSenderInteract: vi.fn().mockReturnValue(true),
+    chatJid: 'test-chat-jid',
     ...overrides,
   };
 }
