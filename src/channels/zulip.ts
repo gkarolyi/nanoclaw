@@ -251,10 +251,26 @@ export class ZulipChannel implements Channel {
             const shouldCatchUp = consecutiveErrors >= 3;
             if (!(await reRegister(shouldCatchUp))) {
               await backoff(consecutiveErrors);
+            } else {
+              consecutiveErrors = 0; // Reset on successful re-registration
             }
           } else {
             logger.error({ msg: result.msg }, 'Zulip poll failed');
-            await backoff(consecutiveErrors);
+
+            // After sustained failures, assume queue is stale and try re-registering
+            if (consecutiveErrors >= 10) {
+              logger.warn(
+                'Too many consecutive poll failures, attempting to re-register queue...',
+              );
+              const shouldCatchUp = true;
+              if (!(await reRegister(shouldCatchUp))) {
+                await backoff(consecutiveErrors);
+              } else {
+                consecutiveErrors = 0;
+              }
+            } else {
+              await backoff(consecutiveErrors);
+            }
           }
           continue;
         }
@@ -284,6 +300,20 @@ export class ZulipChannel implements Channel {
         }
         consecutiveErrors++;
         logger.error({ err: err.message }, 'Zulip poll error');
+
+        // After sustained errors (e.g., Zulip restart returning HTML, network issues),
+        // assume the event queue is stale and attempt to re-register
+        if (consecutiveErrors >= 10) {
+          logger.warn(
+            'Too many consecutive poll errors, attempting to re-register queue...',
+          );
+          const shouldCatchUp = true; // Always catch up after prolonged failure
+          if (await reRegister(shouldCatchUp)) {
+            consecutiveErrors = 0; // Reset on successful re-registration
+            continue; // Skip backoff and try polling immediately
+          }
+        }
+
         await backoff(consecutiveErrors);
       }
     }
