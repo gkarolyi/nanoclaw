@@ -15,6 +15,7 @@ import path from 'path';
 export interface ZulipChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
+  onTopicResolved?: (chatJid: string) => void;
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
@@ -71,6 +72,20 @@ export async function zulipApi(
 
 function stripHtml(content: string): string {
   return content.replace(/<[^>]*>/g, '');
+}
+
+/**
+ * Normalize Zulip topic JIDs by stripping the ✔ prefix from resolved topics.
+ * This ensures resolved and unresolved topics map to the same group.
+ */
+function normalizeZulipJid(chatJid: string): string {
+  const parts = chatJid.split(':');
+  if (parts.length >= 3 && parts[0] === 'zu') {
+    const topic = parts.slice(2).join(':');
+    const normalized = topic.replace(/^✔\s*/, '');
+    return `zu:${parts[1]}:${normalized}`;
+  }
+  return chatJid;
 }
 
 export class ZulipChannel implements Channel {
@@ -494,11 +509,14 @@ export class ZulipChannel implements Channel {
     const streamId = isStream ? String(msg.stream_id) : null;
     const topic = isStream ? msg.subject : undefined;
     // chatJid format: 'zu:streamId:topic' for topics, 'zu:streamId' for stream-level, 'zu:dm:userId' for DMs
-    const chatJid = isStream
+    const rawChatJid = isStream
       ? topic
         ? `zu:${streamId}:${topic}`
         : `zu:${streamId}`
       : `zu:dm:${msg.sender_id}`;
+
+    // Normalize JID to strip ✔ prefix from resolved topics
+    const chatJid = normalizeZulipJid(rawChatJid);
 
     let content = stripHtml(msg.content);
     const timestamp = new Date(msg.timestamp * 1000).toISOString();
@@ -506,7 +524,19 @@ export class ZulipChannel implements Channel {
     const sender = String(msg.sender_id);
     const msgId = String(msg.id);
 
-    // Track last topic per stream for reply routing
+    // Detect topic resolution from Notification Bot
+    if (
+      senderName === 'Notification Bot' &&
+      /has marked this topic as resolved/.test(content)
+    ) {
+      logger.info({ chatJid, topic }, 'Zulip topic marked as resolved');
+      if (this.opts.onTopicResolved) {
+        this.opts.onTopicResolved(chatJid);
+      }
+      return; // Don't deliver resolution notifications to the agent
+    }
+
+    // Track last topic per stream for replies
     if (isStream && topic && streamId) {
       this.lastTopicByStream.set(streamId, topic);
     }

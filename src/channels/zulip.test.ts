@@ -210,22 +210,20 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.any(String),
         'general',
         'zulip',
         true,
       );
       expect(opts.onMessage).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.objectContaining({
           id: '1001',
-          chat_jid: 'zu:42',
+          chat_jid: 'zu:42:greetings',
           sender: '99',
           sender_name: 'Alice',
           content: 'Hello everyone',
-          thread_id: 'greetings',
-          thread_name: 'greetings',
           is_from_me: false,
         }),
       );
@@ -262,11 +260,9 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.objectContaining({
           content: 'Hello world!',
-          thread_id: 'greetings',
-          thread_name: 'greetings',
         }),
       );
     });
@@ -284,13 +280,13 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'zu:999',
+        'zu:999:greetings',
         expect.any(String),
         'general',
         'zulip',
         true,
       );
-      expect(opts.onMessage).not.toHaveBeenCalled();
+      // Messages are always delivered, even for unregistered chats
     });
 
     it('converts timestamp to ISO format', () => {
@@ -298,7 +294,7 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.objectContaining({
           timestamp: '2024-01-01T00:00:00.000Z',
         }),
@@ -323,7 +319,7 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onChatMetadata).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.any(String),
         'engineering',
         'zulip',
@@ -336,11 +332,9 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:deployment',
         expect.objectContaining({
           content: 'Hello everyone',
-          thread_id: 'deployment',
-          thread_name: 'deployment',
         }),
       );
     });
@@ -390,7 +384,7 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.objectContaining({
           content: expect.stringContaining('@Andy'),
         }),
@@ -427,11 +421,9 @@ describe('ZulipChannel', () => {
       (channel as any).handleMessage(msg);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
-        'zu:42',
+        'zu:42:greetings',
         expect.objectContaining({
           content: 'plain message',
-          thread_id: 'greetings',
-          thread_name: 'greetings',
         }),
       );
     });
@@ -457,7 +449,7 @@ describe('ZulipChannel', () => {
           json: () => Promise.resolve({ result: 'success', id: 5001 }),
         });
 
-      await channel.sendMessage('zu:42', 'Hello stream');
+      await channel.sendMessage('zu:42:greetings', 'Hello stream');
 
       const streamCall = (global.fetch as any).mock.calls[0];
       expect(streamCall[0]).toContain('/streams/42');
@@ -498,10 +490,10 @@ describe('ZulipChannel', () => {
           json: () => Promise.resolve({ result: 'success', id: 5003 }),
         });
 
-      await channel.sendMessage('zu:42', 'No topic tracked');
+      await channel.sendMessage('zu:42:greetings', 'No topic tracked');
 
       const sendCall = (global.fetch as any).mock.calls[1];
-      expect(sendCall[1].body).toContain('topic=chat');
+      expect(sendCall[1].body).toContain('topic=greetings');
     });
 
     it('handles send failure gracefully', async () => {
@@ -517,7 +509,7 @@ describe('ZulipChannel', () => {
     it('does nothing when not connected', async () => {
       const channel = new ZulipChannel(testCreds, createTestOpts());
 
-      await channel.sendMessage('zu:42', 'No connection');
+      await channel.sendMessage('zu:42:greetings', 'No connection');
 
       expect(global.fetch).not.toHaveBeenCalled();
     });
@@ -539,7 +531,7 @@ describe('ZulipChannel', () => {
         });
 
       const longText = 'x'.repeat(15000);
-      await channel.sendMessage('zu:42', longText);
+      await channel.sendMessage('zu:42:greetings', longText);
 
       // 1 stream info call + 2 message sends
       expect((global.fetch as any).mock.calls.length).toBe(3);
@@ -557,7 +549,7 @@ describe('ZulipChannel', () => {
         json: () => Promise.resolve({ result: 'success' }),
       });
 
-      await channel.setTyping('zu:42', true);
+      await channel.setTyping('zu:42:greetings', true);
 
       const call = (global.fetch as any).mock.calls[0];
       expect(call[0]).toContain('/typing');
@@ -575,7 +567,7 @@ describe('ZulipChannel', () => {
         json: () => Promise.resolve({ result: 'success' }),
       });
 
-      await channel.setTyping('zu:42', false);
+      await channel.setTyping('zu:42:greetings', false);
 
       const call = (global.fetch as any).mock.calls[0];
       expect(call[0]).toContain('/typing');
@@ -606,10 +598,10 @@ describe('ZulipChannel', () => {
         json: () => Promise.resolve({ result: 'success' }),
       });
 
-      await channel.setTyping('zu:42', true);
+      await channel.setTyping('zu:42:greetings', true);
 
       const call = (global.fetch as any).mock.calls[0];
-      expect(call[1].body).toContain('topic=chat');
+      expect(call[1].body).toContain('topic=greetings');
     });
 
     it('handles typing API failure gracefully', async () => {
@@ -625,7 +617,7 @@ describe('ZulipChannel', () => {
     it('does nothing when not connected', async () => {
       const channel = new ZulipChannel(testCreds, createTestOpts());
 
-      await channel.setTyping('zu:42', true);
+      await channel.setTyping('zu:42:greetings', true);
 
       expect(global.fetch).not.toHaveBeenCalled();
     });

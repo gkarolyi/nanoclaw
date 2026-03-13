@@ -116,3 +116,6 @@ export type OnChatMetadata = (
   channel?: string,
   isGroup?: boolean,
 ) => void;
+
+// Callback for when a topic is resolved (e.g., Zulip topic marked as resolved)
+export type OnTopicResolved = (chatJid: string) => void;

@@ -39,6 +39,7 @@ import {
   getRouterState,
   initDatabase,
   setRegisteredGroup,
+  deleteRegisteredGroup,
   setRouterState,
   setSession,
   storeChatMetadata,
@@ -854,6 +855,22 @@ async function main(): Promise<void> {
       channel?: string,
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
+    onTopicResolved: (chatJid: string) => {
+      const group = registeredGroups[chatJid];
+      if (!group) {
+        logger.debug(
+          { chatJid },
+          'Topic resolved but not registered, ignoring',
+        );
+        return;
+      }
+      logger.info(
+        { chatJid, folder: group.folder },
+        'Archiving resolved topic',
+      );
+      deleteRegisteredGroup(chatJid);
+      delete registeredGroups[chatJid];
+    },
     registeredGroups: () => registeredGroups,
   };
 
