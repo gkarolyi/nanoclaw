@@ -9,6 +9,7 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
+  ZULIP_AUTO_REGISTER_STREAMS,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -251,7 +252,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       formatMessages,
       canSenderInteract: (msg) => {
         const hasTrigger = TRIGGER_PATTERN.test(msg.content.trim());
-        const reqTrigger = !isMainGroup && group.requiresTrigger !== false;
+        let reqTrigger = !isMainGroup && group.requiresTrigger !== false;
+
+        // Override for Zulip topics in auto-register streams
+        if (chatJid.startsWith('zu:') && !chatJid.startsWith('zu:dm:')) {
+          const parts = chatJid.split(':');
+          if (parts.length > 2) {
+            const streamId = parts[1];
+            if (ZULIP_AUTO_REGISTER_STREAMS.includes(streamId)) {
+              reqTrigger = false;
+            }
+          }
+        }
+
         return (
           isMainGroup ||
           !reqTrigger ||
@@ -266,7 +279,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // --- End session command interception ---
 
   // For non-main groups, check if trigger is required and present
-  if (!isMainGroup && group.requiresTrigger !== false) {
+  // Check if this is a Zulip topic in an auto-register stream (overrides group setting)
+  let requiresTrigger = !isMainGroup && group.requiresTrigger !== false;
+  if (chatJid.startsWith('zu:') && !chatJid.startsWith('zu:dm:')) {
+    const parts = chatJid.split(':');
+    if (parts.length > 2) {
+      const streamId = parts[1];
+      if (ZULIP_AUTO_REGISTER_STREAMS.includes(streamId)) {
+        requiresTrigger = false; // Stream is configured to not require triggers
+      }
+    }
+  }
+
+  if (requiresTrigger) {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
@@ -518,7 +543,18 @@ async function startMessageLoop(): Promise<void> {
           }
           // --- End session command interception ---
 
-          const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+          let needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+
+          // Override for Zulip topics in auto-register streams
+          if (chatJid.startsWith('zu:') && !chatJid.startsWith('zu:dm:')) {
+            const parts = chatJid.split(':');
+            if (parts.length > 2) {
+              const streamId = parts[1];
+              if (ZULIP_AUTO_REGISTER_STREAMS.includes(streamId)) {
+                needsTrigger = false;
+              }
+            }
+          }
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
@@ -621,36 +657,93 @@ async function main(): Promise<void> {
   // Channel callbacks (shared by all channels)
   const channelOpts = {
     onMessage: (chatJid: string, msg: NewMessage) => {
-      // Auto-register Zulip topics when mentioned
+      // Auto-register Zulip topics when mentioned or when parent stream is registered
       if (
         !registeredGroups[chatJid] &&
         chatJid.startsWith('zu:') &&
         !chatJid.startsWith('zu:dm:')
       ) {
         const parts = chatJid.split(':');
-        if (parts.length > 2 && TRIGGER_PATTERN.test(msg.content)) {
+        if (parts.length > 2) {
           const streamId = parts[1];
           const topic = parts.slice(2).join(':');
-          const streamName = `stream_${streamId}`;
-          const sanitizedStream = streamName
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-');
-          const sanitizedTopic = topic
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-');
-          const hash = chatJid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
-          const folderName =
-            `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
-              0,
-              64,
-            );
-          registerGroup(chatJid, {
-            name: `${streamName} / ${topic}`,
-            folder: folderName,
-            trigger: `@${ASSISTANT_NAME}`,
-            added_at: new Date().toISOString(),
-            requiresTrigger: true,
-          });
+          // Check if this stream is configured for auto-registration
+          const isAutoRegisterStream =
+            ZULIP_AUTO_REGISTER_STREAMS.includes(streamId);
+
+          let trigger: string;
+          let requiresTrigger: boolean;
+          let shouldAutoRegister: boolean;
+
+          if (isAutoRegisterStream) {
+            // Stream is configured to always auto-register without trigger
+            trigger = `@${ASSISTANT_NAME}`;
+            requiresTrigger = false;
+            shouldAutoRegister = true;
+          } else {
+            // Look for existing topics in the same stream to inherit settings
+            const parentStreamJid = `zu:${streamId}`;
+            let templateGroup = registeredGroups[parentStreamJid];
+
+            if (!templateGroup) {
+              const streamPrefix = `zu:${streamId}:`;
+              for (const [jid, group] of Object.entries(registeredGroups)) {
+                if (jid.startsWith(streamPrefix) && jid !== chatJid) {
+                  templateGroup = group;
+                  break;
+                }
+              }
+            }
+
+            // Auto-register if we found a template group OR if message contains trigger
+            shouldAutoRegister =
+              templateGroup !== undefined || TRIGGER_PATTERN.test(msg.content);
+
+            // Inherit settings from template group if it exists, otherwise use defaults
+            trigger = templateGroup?.trigger ?? `@${ASSISTANT_NAME}`;
+            requiresTrigger = templateGroup?.requiresTrigger ?? true;
+          }
+
+          if (shouldAutoRegister) {
+            const streamName = `stream_${streamId}`;
+            const sanitizedStream = streamName
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-');
+            const sanitizedTopic = topic
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, '-');
+            const hash = chatJid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
+            const folderName =
+              `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
+                0,
+                64,
+              );
+
+            registerGroup(chatJid, {
+              name: `${streamName} / ${topic}`,
+              folder: folderName,
+              trigger,
+              added_at: new Date().toISOString(),
+              requiresTrigger,
+            });
+
+            // Backfill topic history so agent has access to previous messages
+            const channel = findChannel(channels, chatJid);
+            if (channel && 'backfillTopicHistory' in channel) {
+              // Fire and forget - don't block message processing
+              (channel as any)
+                .backfillTopicHistory(chatJid)
+                .catch((err: any) => {
+                  logger.error(
+                    { chatJid, err: err.message },
+                    'Failed to backfill topic history',
+                  );
+                });
+            }
+          } else {
+            // Not registered and not auto-registering, skip
+            return;
+          }
         } else if (!registeredGroups[chatJid]) {
           // Not registered and not auto-registering, skip
           return;

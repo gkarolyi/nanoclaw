@@ -183,6 +183,59 @@ export class ZulipChannel implements Channel {
     }
   }
 
+  /**
+   * Backfill message history for a newly registered topic.
+   * Fetches all messages from the topic and stores them in chronological order.
+   */
+  async backfillTopicHistory(chatJid: string): Promise<void> {
+    if (!this.connected) {
+      logger.warn('Zulip not connected, cannot backfill topic history');
+      return;
+    }
+
+    // Parse JID to extract stream ID and topic
+    const parts = chatJid.split(':');
+    if (parts.length < 3 || !parts[0].startsWith('zu')) {
+      logger.warn({ chatJid }, 'Invalid Zulip topic JID for backfill');
+      return;
+    }
+
+    const streamId = parts[1];
+    const topic = parts.slice(2).join(':');
+
+    try {
+      logger.info({ chatJid, streamId, topic }, 'Backfilling topic history');
+
+      // Fetch all messages from this topic
+      const messages = await this.searchTopicMessages(streamId, topic, 1000);
+
+      if (messages.length === 0) {
+        logger.info({ chatJid }, 'No history to backfill');
+        return;
+      }
+
+      logger.info(
+        { chatJid, count: messages.length },
+        'Processing backfilled messages',
+      );
+
+      // Process messages in chronological order (oldest first)
+      messages.sort((a: any, b: any) => a.timestamp - b.timestamp);
+      for (const msg of messages) {
+        // Skip messages we might have already processed
+        // handleMessage will deduplicate based on message ID
+        await this.handleMessage(msg);
+      }
+
+      logger.info({ chatJid }, 'Finished backfilling topic history');
+    } catch (err: any) {
+      logger.error(
+        { chatJid, err: err.message },
+        'Error backfilling topic history',
+      );
+    }
+  }
+
   private async pollLoop(): Promise<void> {
     // Register event queue
     const registerResult = await zulipApi(this.creds, '/register', 'POST', {
@@ -528,11 +581,10 @@ export class ZulipChannel implements Channel {
 
       const params = new URLSearchParams({
         narrow: JSON.stringify(narrow),
-        num_before: '0',
-        num_after: String(limit),
+        num_before: String(limit),
+        num_after: '0',
         anchor: 'newest',
       });
-
       const result = await zulipApi(
         this.creds,
         `/messages?${params.toString()}`,

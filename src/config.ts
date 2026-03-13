@@ -71,3 +71,20 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// --- Zulip Configuration ---
+
+/**
+ * Zulip stream IDs that should auto-register new topics without requiring a trigger.
+ * When a message arrives in a new topic within these streams, the topic will be
+ * auto-registered and inherit requiresTrigger: false.
+ *
+ * Example: ['3', '5', '8'] for streams 3, 5, and 8
+ *
+ * To find your stream ID, check the Zulip URL when viewing a stream, or look at
+ * the chat_jid in logs (e.g., 'zu:3:topic-name' has stream ID '3').
+ */
+export const ZULIP_AUTO_REGISTER_STREAMS: string[] = [
+  '3', // general stream - auto-register all topics without requiring trigger
+  // Add more stream IDs here as needed
+];
