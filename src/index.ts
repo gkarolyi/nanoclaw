@@ -270,7 +270,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           (hasTrigger &&
             (msg.is_from_me ||
               isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
-        )
+        );
       },
       chatJid,
       triggerBackfill: async () => {
@@ -306,7 +306,6 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   if (requiresTrigger && channel.shouldRequireTrigger) {
     requiresTrigger = channel.shouldRequireTrigger(chatJid);
   }
-
 
   if (requiresTrigger) {
     const allowlistCfg = loadSenderAllowlist();
@@ -561,12 +560,11 @@ async function startMessageLoop(): Promise<void> {
           // --- End session command interception ---
 
           let needsTrigger = !isMainGroup && group.requiresTrigger !== false;
-          
+
           // Check if channel wants to override trigger requirement
           if (needsTrigger && channel?.shouldRequireTrigger) {
             needsTrigger = channel.shouldRequireTrigger(chatJid);
           }
-
 
           // For non-main groups, only act on trigger messages.
           // Non-trigger messages accumulate in DB and get pulled as
@@ -755,7 +753,6 @@ async function main(): Promise<void> {
           }
         }
       }
-
 
       const parentGroup = registeredGroups[chatJid];
       const targetJid = buildThreadJid(chatJid, msg.thread_id);

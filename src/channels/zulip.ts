@@ -762,7 +762,6 @@ export class ZulipChannel implements Channel {
     return jid.startsWith('zu:');
   }
 
-
   /**
    * Override trigger requirements for auto-register streams.
    * Topics in ZULIP_AUTO_REGISTER_STREAMS don't require trigger.
@@ -792,7 +791,10 @@ export class ZulipChannel implements Channel {
       triggerPattern: RegExp;
       assistantName: string;
     },
-  ): { shouldRegister: boolean; group?: import('../types.js').RegisteredGroup } | null {
+  ): {
+    shouldRegister: boolean;
+    group?: import('../types.js').RegisteredGroup;
+  } | null {
     // Only handle Zulip topic JIDs
     if (!jid.startsWith('zu:') || jid.startsWith('zu:dm:')) {
       return null;
@@ -824,7 +826,9 @@ export class ZulipChannel implements Channel {
 
       if (!templateGroup) {
         const streamPrefix = `zu:${streamId}:`;
-        for (const [existingJid, group] of Object.entries(context.registeredGroups)) {
+        for (const [existingJid, group] of Object.entries(
+          context.registeredGroups,
+        )) {
           if (existingJid.startsWith(streamPrefix) && existingJid !== jid) {
             templateGroup = group;
             break;
@@ -834,7 +838,8 @@ export class ZulipChannel implements Channel {
 
       // Auto-register if we found a template group OR if message contains trigger
       shouldAutoRegister =
-        templateGroup !== undefined || context.triggerPattern.test(message.content);
+        templateGroup !== undefined ||
+        context.triggerPattern.test(message.content);
 
       // Inherit settings from template group if it exists, otherwise use defaults
       trigger = templateGroup?.trigger ?? `@${context.assistantName}`;
@@ -852,10 +857,8 @@ export class ZulipChannel implements Channel {
       .replace(/[^a-z0-9]+/g, '-');
     const sanitizedTopic = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-');
     const hash = jid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
-    const folderName = `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
-      0,
-      64,
-    );
+    const folderName =
+      `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(0, 64);
 
     return {
       shouldRegister: true,
