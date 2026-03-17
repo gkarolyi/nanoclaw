@@ -6,6 +6,11 @@ Personal Claude assistant. See [README.md](README.md) for philosophy and setup. 
 
 Single Node.js process with skill-based channel system. Channels (WhatsApp, Telegram, Slack, Discord, Gmail) are skills that self-register at startup. Messages route to Claude Agent SDK running in containers (Linux VMs). Each group has isolated filesystem and memory.
 
+
+## Communication
+
+Output information directly in the chat using markdown. **MUST NOT** use `cat << EOF`, `echo`, or similar methods to write temporary files just to display content to the user. Present plans, analyses, and documentation inline.
+
 ## Key Files
 
 | File | Purpose |
