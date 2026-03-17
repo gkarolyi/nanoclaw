@@ -202,7 +202,7 @@ export class ZulipChannel implements Channel {
    * Backfill message history for a newly registered topic.
    * Fetches all messages from the topic and stores them in chronological order.
    */
-  async backfillTopicHistory(chatJid: string): Promise<void> {
+  async backfillHistory(chatJid: string): Promise<void> {
     if (!this.connected) {
       logger.warn('Zulip not connected, cannot backfill topic history');
       return;
@@ -760,6 +760,113 @@ export class ZulipChannel implements Channel {
 
   ownsJid(jid: string): boolean {
     return jid.startsWith('zu:');
+  }
+
+
+  /**
+   * Override trigger requirements for auto-register streams.
+   * Topics in ZULIP_AUTO_REGISTER_STREAMS don't require trigger.
+   */
+  shouldRequireTrigger(jid: string): boolean {
+    if (!jid.startsWith('zu:') || jid.startsWith('zu:dm:')) {
+      return true; // DMs use default behavior
+    }
+
+    const parts = jid.split(':');
+    if (parts.length < 2) return true;
+
+    const streamId = parts[1];
+    const { ZULIP_AUTO_REGISTER_STREAMS } = require('../config.js');
+    return !ZULIP_AUTO_REGISTER_STREAMS.includes(streamId);
+  }
+
+  /**
+   * Handle auto-registration for Zulip topics.
+   * Auto-registers topics in configured streams or when mentioned in new topics.
+   */
+  handleAutoRegister(
+    jid: string,
+    message: import('../types.js').NewMessage,
+    context: {
+      registeredGroups: Record<string, import('../types.js').RegisteredGroup>;
+      triggerPattern: RegExp;
+      assistantName: string;
+    },
+  ): { shouldRegister: boolean; group?: import('../types.js').RegisteredGroup } | null {
+    // Only handle Zulip topic JIDs
+    if (!jid.startsWith('zu:') || jid.startsWith('zu:dm:')) {
+      return null;
+    }
+
+    const parts = jid.split(':');
+    if (parts.length < 3) return null; // Not a topic
+
+    const streamId = parts[1];
+    const topic = parts.slice(2).join(':');
+    const { ZULIP_AUTO_REGISTER_STREAMS } = require('../config.js');
+
+    // Check if this stream is configured for auto-registration
+    const isAutoRegisterStream = ZULIP_AUTO_REGISTER_STREAMS.includes(streamId);
+
+    let trigger: string;
+    let requiresTrigger: boolean;
+    let shouldAutoRegister: boolean;
+
+    if (isAutoRegisterStream) {
+      // Stream is configured to always auto-register without trigger
+      trigger = `@${context.assistantName}`;
+      requiresTrigger = false;
+      shouldAutoRegister = true;
+    } else {
+      // Look for existing topics in the same stream to inherit settings
+      const parentStreamJid = `zu:${streamId}`;
+      let templateGroup = context.registeredGroups[parentStreamJid];
+
+      if (!templateGroup) {
+        const streamPrefix = `zu:${streamId}:`;
+        for (const [existingJid, group] of Object.entries(context.registeredGroups)) {
+          if (existingJid.startsWith(streamPrefix) && existingJid !== jid) {
+            templateGroup = group;
+            break;
+          }
+        }
+      }
+
+      // Auto-register if we found a template group OR if message contains trigger
+      shouldAutoRegister =
+        templateGroup !== undefined || context.triggerPattern.test(message.content);
+
+      // Inherit settings from template group if it exists, otherwise use defaults
+      trigger = templateGroup?.trigger ?? `@${context.assistantName}`;
+      requiresTrigger = templateGroup?.requiresTrigger ?? true;
+    }
+
+    if (!shouldAutoRegister) {
+      return { shouldRegister: false };
+    }
+
+    // Build folder name
+    const streamName = `stream_${streamId}`;
+    const sanitizedStream = streamName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-');
+    const sanitizedTopic = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const hash = jid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
+    const folderName = `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
+      0,
+      64,
+    );
+
+    return {
+      shouldRegister: true,
+      group: {
+        name: `${streamName} / ${topic}`,
+        folder: folderName,
+        trigger,
+        added_at: new Date().toISOString(),
+        requiresTrigger,
+      },
+    };
   }
 
   async disconnect(): Promise<void> {
