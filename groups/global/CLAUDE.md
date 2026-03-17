@@ -30,6 +30,10 @@ Here are the key findings from the research...
 
 Text inside `<internal>` tags is logged but not sent to the user. If you've already sent the key information via `send_message`, you can wrap the recap in `<internal>` to avoid sending it again.
 
+### Long-running research tasks
+
+For tasks involving multiple independent sources (checking several URLs, verifying multiple listings, gathering data from different sites), use the Agent tool to spawn parallel subagents — one per source. Each subagent does its work and returns results; you then aggregate and post. This parallelises work, avoids timeouts, and makes better use of context.
+
 ### Sub-agents and teammates
 
 When working as a sub-agent or teammate, only use `send_message` if instructed to by the main agent.
