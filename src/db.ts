@@ -2,7 +2,12 @@ import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
 
-import { ASSISTANT_NAME, DATA_DIR, STORE_DIR } from './config.js';
+import {
+  ASSISTANT_NAME,
+  DATA_DIR,
+  STORE_DIR,
+  ZULIP_AUTO_REGISTER_STREAMS,
+} from './config.js';
 import { isValidGroupFolder } from './group-folder.js';
 import { logger } from './logger.js';
 import {
@@ -82,6 +87,12 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS channel_settings (
+      channel TEXT NOT NULL,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      PRIMARY KEY (channel, key, value)
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -150,6 +161,26 @@ function createSchema(database: Database.Database): void {
     database.exec(`ALTER TABLE messages ADD COLUMN thread_name TEXT`);
   } catch {
     /* column already exists */
+  }
+
+  // Seed channel_settings from ZULIP_AUTO_REGISTER_STREAMS if not already seeded
+  const existingSettings = database
+    .prepare(
+      `SELECT COUNT(*) as count FROM channel_settings WHERE channel = 'zulip' AND key = 'auto_register_stream'`,
+    )
+    .get() as { count: number };
+
+  if (existingSettings.count === 0 && ZULIP_AUTO_REGISTER_STREAMS.length > 0) {
+    const insertSetting = database.prepare(
+      `INSERT OR IGNORE INTO channel_settings (channel, key, value) VALUES (?, ?, ?)`,
+    );
+    for (const streamId of ZULIP_AUTO_REGISTER_STREAMS) {
+      insertSetting.run('zulip', 'auto_register_stream', streamId);
+    }
+    logger.info(
+      { count: ZULIP_AUTO_REGISTER_STREAMS.length },
+      'Seeded Zulip auto-register streams from env config',
+    );
   }
 }
 
@@ -670,6 +701,51 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Channel Settings ---
+
+export function getChannelSettings(channel: string, key: string): string[] {
+  const rows = db
+    .prepare(
+      `SELECT value FROM channel_settings WHERE channel = ? AND key = ? ORDER BY value`,
+    )
+    .all(channel, key) as Array<{ value: string }>;
+  return rows.map((r) => r.value);
+}
+
+export function setChannelSetting(
+  channel: string,
+  key: string,
+  value: string,
+): void {
+  db.prepare(
+    `INSERT OR IGNORE INTO channel_settings (channel, key, value) VALUES (?, ?, ?)`,
+  ).run(channel, key, value);
+  logger.info({ channel, key, value }, 'Channel setting added');
+}
+
+export function deleteChannelSetting(
+  channel: string,
+  key: string,
+  value: string,
+): void {
+  db.prepare(
+    `DELETE FROM channel_settings WHERE channel = ? AND key = ? AND value = ?`,
+  ).run(channel, key, value);
+  logger.info({ channel, key, value }, 'Channel setting deleted');
+}
+
+export function listAllChannelSettings(): Array<{
+  channel: string;
+  key: string;
+  value: string;
+}> {
+  return db
+    .prepare(
+      `SELECT channel, key, value FROM channel_settings ORDER BY channel, key, value`,
+    )
+    .all() as Array<{ channel: string; key: string; value: string }>;
 }
 
 // --- JSON migration ---

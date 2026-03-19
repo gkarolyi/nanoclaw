@@ -13,6 +13,10 @@ import {
   storeChatMetadata,
   storeMessage,
   updateTask,
+  getChannelSettings,
+  setChannelSetting,
+  deleteChannelSetting,
+  listAllChannelSettings,
 } from './db.js';
 
 beforeEach(() => {
@@ -480,5 +484,57 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- Channel Settings ---
+
+describe('channel settings', () => {
+  it('stores and retrieves channel settings', () => {
+    setChannelSetting('zulip', 'auto_register_stream', '3');
+    setChannelSetting('zulip', 'auto_register_stream', '4');
+    setChannelSetting('zulip', 'auto_register_stream', '6');
+
+    const streams = getChannelSettings('zulip', 'auto_register_stream');
+    expect(streams).toHaveLength(3);
+    expect(streams).toContain('3');
+    expect(streams).toContain('4');
+    expect(streams).toContain('6');
+  });
+
+  it('ignores duplicate settings', () => {
+    setChannelSetting('zulip', 'auto_register_stream', '3');
+    setChannelSetting('zulip', 'auto_register_stream', '3');
+
+    const streams = getChannelSettings('zulip', 'auto_register_stream');
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toBe('3');
+  });
+
+  it('deletes channel settings', () => {
+    setChannelSetting('zulip', 'auto_register_stream', '3');
+    setChannelSetting('zulip', 'auto_register_stream', '4');
+
+    deleteChannelSetting('zulip', 'auto_register_stream', '3');
+
+    const streams = getChannelSettings('zulip', 'auto_register_stream');
+    expect(streams).toHaveLength(1);
+    expect(streams[0]).toBe('4');
+  });
+
+  it('lists all channel settings', () => {
+    setChannelSetting('zulip', 'auto_register_stream', '3');
+    setChannelSetting('zulip', 'auto_register_stream', '4');
+    setChannelSetting('telegram', 'some_setting', 'value');
+
+    const all = listAllChannelSettings();
+    expect(all).toHaveLength(3);
+    expect(all.filter((s) => s.channel === 'zulip')).toHaveLength(2);
+    expect(all.filter((s) => s.channel === 'telegram')).toHaveLength(1);
+  });
+
+  it('returns empty array for non-existent settings', () => {
+    const streams = getChannelSettings('nonexistent', 'missing');
+    expect(streams).toHaveLength(0);
   });
 });

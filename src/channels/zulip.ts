@@ -9,7 +9,7 @@ import {
   RegisteredGroup,
   Attachment,
 } from '../types.js';
-import { getLastZulipMessageTimestamp } from '../db.js';
+import { getLastZulipMessageTimestamp, getChannelSettings } from '../db.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 export interface ZulipChannelOpts {
@@ -775,8 +775,11 @@ export class ZulipChannel implements Channel {
     if (parts.length < 2) return true;
 
     const streamId = parts[1];
-    const { ZULIP_AUTO_REGISTER_STREAMS } = require('../config.js');
-    return !ZULIP_AUTO_REGISTER_STREAMS.includes(streamId);
+    const autoRegisterStreams = getChannelSettings(
+      'zulip',
+      'auto_register_stream',
+    );
+    return !autoRegisterStreams.includes(streamId);
   }
 
   /**
@@ -805,10 +808,13 @@ export class ZulipChannel implements Channel {
 
     const streamId = parts[1];
     const topic = parts.slice(2).join(':');
-    const { ZULIP_AUTO_REGISTER_STREAMS } = require('../config.js');
 
     // Check if this stream is configured for auto-registration
-    const isAutoRegisterStream = ZULIP_AUTO_REGISTER_STREAMS.includes(streamId);
+    const autoRegisterStreams = getChannelSettings(
+      'zulip',
+      'auto_register_stream',
+    );
+    const isAutoRegisterStream = autoRegisterStreams.includes(streamId);
 
     let trigger: string;
     let requiresTrigger: boolean;
