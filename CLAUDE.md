@@ -10,6 +10,7 @@ Single Node.js process with skill-based channel system. Channels (WhatsApp, Tele
 ## Communication
 
 Output information directly in the chat using markdown. **MUST NOT** use `cat << EOF`, `echo`, or similar methods to write temporary files just to display content to the user. Present plans, analyses, and documentation inline.
+Always ask questions one at a time using the ask_user tool.
 
 ## Key Files
 
