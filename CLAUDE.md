@@ -26,6 +26,29 @@ Output information directly in the chat using markdown. **MUST NOT** use `cat <<
 | `groups/{name}/CLAUDE.md` | Per-group memory (isolated) |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
 
+
+## Integrations
+
+### Forgejo Integration
+
+Agents can interact with local Forgejo instances via REST API and git operations using credential proxy pattern.
+
+**Architecture:**
+- API calls route through credential proxy: `http://host.docker.internal:3001/forgejo/*`
+- Git operations use credential helper that fetches tokens from proxy on-demand
+- Credentials (`FORGEJO_TOKEN`) never enter container filesystems
+
+**Configuration:**
+- `.env`: `FORGEJO_URL`, `FORGEJO_TOKEN`
+- `src/credential-proxy.ts`: Routing logic for `/forgejo/*` and `/git-credentials` endpoints
+- `container/git-credential-helper.sh`: Git credential helper script
+- `container/Dockerfile`: Installs `jq` and configures git to use credential helper
+- `groups/main/CLAUDE.md`: Agent instructions (API examples, workflows)
+
+**User Setup:** See [docs/FORGEJO_INTEGRATION.md](docs/FORGEJO_INTEGRATION.md)
+
+**Implementation Plan:** See [docs/FORGEJO_INTEGRATION_PLAN.md](docs/FORGEJO_INTEGRATION_PLAN.md)
+
 ## Skills
 
 | Skill | When to Use |
@@ -36,6 +59,35 @@ Output information directly in the chat using markdown. **MUST NOT** use `cat <<
 | `/update-nanoclaw` | Bring upstream NanoClaw updates into a customized install |
 | `/qodo-pr-resolver` | Fetch and fix Qodo PR review issues interactively or in batch |
 | `/get-qodo-rules` | Load org- and repo-level coding rules from Qodo before code tasks |
+
+## Security
+
+### Secrets and Credentials
+
+**ABSOLUTE PROHIBITION:** You **MUST NEVER** read, display, or log the contents of `.env` files or any files containing secrets, API keys, tokens, or passwords.
+
+**Specifically forbidden:**
+- `cat .env`
+- `grep TOKEN .env`
+- `read(path=".env")`
+- Any command or tool that would reveal secret values
+
+**Why this matters:**
+- Secrets in `.env` are meant to stay on the host only
+- Reading them exposes them in logs, conversation history, and artifacts
+- Even "just checking" creates a security incident
+
+**What you CAN do:**
+- Check if a variable is *set*: `[ -n "$FORGEJO_TOKEN" ] && echo "set" || echo "not set"`
+- Verify configuration files *exist*: `[ -f .env ] && echo "exists"`
+- Read `.env.example` (never contains real secrets)
+
+**If you need to verify configuration:**
+1. Ask the user if the variable is set
+2. Test the *functionality* (e.g., make an API call and check if auth works)
+3. Never read the actual secret value
+
+This is non-negotiable. Violating this erodes trust and creates security risks.
 
 ## Development
 

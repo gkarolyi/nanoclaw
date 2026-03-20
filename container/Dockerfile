@@ -3,7 +3,7 @@
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium
+# Install system dependencies for Chromium and git credential helper
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
@@ -24,11 +24,17 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    jq \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Configure git credential helper for Forgejo integration
+COPY git-credential-helper.sh /usr/local/bin/git-credential-helper.sh
+RUN chmod +x /usr/local/bin/git-credential-helper.sh && \
+    git config --system credential.helper /usr/local/bin/git-credential-helper.sh
 
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code

@@ -273,6 +273,31 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
+  // Pass Forgejo URL to containers (but not token - proxy injects that)
+  const forgejoSecrets = readEnvFile(['FORGEJO_URL']);
+  if (forgejoSecrets.FORGEJO_URL) {
+    args.push('-e', `FORGEJO_URL=${forgejoSecrets.FORGEJO_URL}`);
+  }
+
+  // Pass Zulip configuration for webhook setup
+  const zulipSecrets = readEnvFile([
+    'ZULIP_INCOMING_WEBHOOK_API_KEY',
+    'ZULIP_BASE_URL',
+    'ZULIP_GIT_STREAM_ID',
+  ]);
+  if (zulipSecrets.ZULIP_INCOMING_WEBHOOK_API_KEY) {
+    args.push(
+      '-e',
+      `ZULIP_INCOMING_WEBHOOK_API_KEY=${zulipSecrets.ZULIP_INCOMING_WEBHOOK_API_KEY}`,
+    );
+  }
+  if (zulipSecrets.ZULIP_BASE_URL) {
+    args.push('-e', `ZULIP_BASE_URL=${zulipSecrets.ZULIP_BASE_URL}`);
+  }
+  if (zulipSecrets.ZULIP_GIT_STREAM_ID) {
+    args.push('-e', `ZULIP_GIT_STREAM_ID=${zulipSecrets.ZULIP_GIT_STREAM_ID}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
