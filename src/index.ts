@@ -35,7 +35,6 @@ import {
   getMessagesSince,
   getNewMessages,
   getRegisteredGroup,
-  getRouterState,
   initDatabase,
   setRegisteredGroup,
   deleteRegisteredGroup,
@@ -43,6 +42,7 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  getRouterState,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -62,7 +62,6 @@ import {
 import {
   extractSessionCommand,
   handleSessionCommand,
-  isSessionCommandAllowed,
 } from './session-commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -296,6 +295,50 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           };
         }
       },
+      registerTopic: async () => {
+        if (!channel.registerTopic) {
+          return {
+            success: false,
+            message:
+              'Topic registration is not supported for this channel type.',
+          };
+        }
+
+        try {
+          return await channel.registerTopic(chatJid);
+        } catch (err: any) {
+          logger.error(
+            { chatJid, err: err.message },
+            'Failed to register topic',
+          );
+          return {
+            success: false,
+            message: `Failed to register topic: ${err.message}`,
+          };
+        }
+      },
+      unregisterTopic: async () => {
+        if (!channel.unregisterTopic) {
+          return {
+            success: false,
+            message:
+              'Topic unregistration is not supported for this channel type.',
+          };
+        }
+
+        try {
+          return await channel.unregisterTopic(chatJid);
+        } catch (err: any) {
+          logger.error(
+            { chatJid, err: err.message },
+            'Failed to unregister topic',
+          );
+          return {
+            success: false,
+            message: `Failed to unregister topic: ${err.message}`,
+          };
+        }
+      },
     },
   });
   if (cmdResult.handled) return cmdResult.success;
@@ -311,8 +354,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+        (TRIGGER_PATTERN.test(m.content.trim()) &&
+          (m.is_from_me ||
+            isTriggerAllowed(chatJid, m.sender, allowlistCfg))) ||
+        extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
     );
     if (!hasTrigger) {
       return true;
@@ -538,17 +583,27 @@ async function startMessageLoop(): Promise<void> {
           const loopCmdMsg = groupMessages.find(
             (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
           );
-
           if (loopCmdMsg) {
             // Only close active container if the sender is authorized — otherwise an
             // untrusted user could kill in-flight work by sending /compact (DoS).
             // closeStdin no-ops internally when no container is active.
-            if (
-              isSessionCommandAllowed(
-                isMainGroup,
-                loopCmdMsg.is_from_me === true,
-              )
-            ) {
+            // Authorization: main group OR sender can normally interact
+            const hasTrigger = TRIGGER_PATTERN.test(loopCmdMsg.content.trim());
+            let reqTrigger = !isMainGroup && group.requiresTrigger !== false;
+            if (reqTrigger && channel?.shouldRequireTrigger) {
+              reqTrigger = channel.shouldRequireTrigger(chatJid);
+            }
+            const isAuthorized =
+              isMainGroup ||
+              !reqTrigger ||
+              (hasTrigger &&
+                (loopCmdMsg.is_from_me ||
+                  isTriggerAllowed(
+                    chatJid,
+                    loopCmdMsg.sender,
+                    loadSenderAllowlist(),
+                  )));
+            if (isAuthorized) {
               queue.closeStdin(chatJid);
             }
             // Enqueue so processGroupMessages handles auth + cursor advancement.
@@ -573,9 +628,10 @@ async function startMessageLoop(): Promise<void> {
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(
               (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
-                (m.is_from_me ||
-                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+                (TRIGGER_PATTERN.test(m.content.trim()) &&
+                  (m.is_from_me ||
+                    isTriggerAllowed(chatJid, m.sender, allowlistCfg))) ||
+                extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
             );
             if (!hasTrigger) continue;
           }

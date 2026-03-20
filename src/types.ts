@@ -116,6 +116,13 @@ export interface Channel {
   ): { shouldRegister: boolean; group?: RegisteredGroup } | null;
   // Optional: backfill message history for a JID.
   backfillHistory?(jid: string): Promise<void>;
+  // Optional: topic registration (Zulip)
+  registerTopic?(
+    chatJid: string,
+  ): Promise<{ success: boolean; message: string }>;
+  unregisterTopic?(
+    chatJid: string,
+  ): Promise<{ success: boolean; message: string }>;
 }
 
 // Callback type that channels use to deliver inbound messages

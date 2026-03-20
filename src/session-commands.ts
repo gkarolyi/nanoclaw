@@ -1,5 +1,6 @@
 import type { NewMessage } from './types.js';
 import { logger } from './logger.js';
+import { loadSenderAllowlist, isTriggerAllowed } from './sender-allowlist.js';
 
 /**
  * Extract a session slash command from a message, stripping the trigger prefix if present.
@@ -9,22 +10,24 @@ export function extractSessionCommand(
   content: string,
   triggerPattern: RegExp,
 ): string | null {
-  let text = content.trim();
-  text = text.replace(triggerPattern, '').trim();
-  if (text === '/compact') return '/compact';
-  if (text === '/backfill') return '/backfill';
-  return null;
-}
+  const trimmed = content.trim();
 
-/**
- * Check if a session command sender is authorized.
- * Allowed: main group (any sender), or trusted/admin sender (is_from_me) in any group.
- */
-export function isSessionCommandAllowed(
-  isMainGroup: boolean,
-  isFromMe: boolean,
-): boolean {
-  return isMainGroup || isFromMe;
+  // Standalone commands - work without trigger, must be exact match
+  if (trimmed === '/register') return '/register';
+  if (trimmed === '/unregister') return '/unregister';
+  if (trimmed === '/backfill') return '/backfill';
+  if (trimmed === '/commands') return '/commands';
+  if (trimmed === '/help') return '/commands'; // Alias for /commands
+
+  // Agent commands - require trigger, passed to agent
+  let text = trimmed;
+  // Strip all leading trigger patterns (handles duplicate mentions)
+  while (triggerPattern.test(text)) {
+    text = text.replace(triggerPattern, '').trim();
+  }
+  if (text === '/compact') return '/compact';
+
+  return null;
 }
 
 /** Minimal agent result interface — matches the subset of ContainerOutput used here. */
@@ -50,6 +53,10 @@ export interface SessionCommandDeps {
   chatJid: string;
   /** Trigger backfill for Zulip topics. */
   triggerBackfill?: () => Promise<{ success: boolean; message: string }>;
+  /** Register the current topic to receive all messages without trigger. */
+  registerTopic?: () => Promise<{ success: boolean; message: string }>;
+  /** Unregister the current topic from receiving all messages without trigger. */
+  unregisterTopic?: () => Promise<{ success: boolean; message: string }>;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -87,17 +94,23 @@ export async function handleSessionCommand(opts: {
   const command = cmdMsg
     ? extractSessionCommand(cmdMsg.content, triggerPattern)
     : null;
-
   if (!command || !cmdMsg) return { handled: false };
 
-  if (!isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)) {
-    // DENIED: send denial if the sender would normally be allowed to interact,
-    // then silently consume the command by advancing the cursor past it.
+  // Authorization: main group (any sender) OR sender is authorized (from_me or allowlisted)
+  // Session commands don't require a trigger — they ARE the trigger
+  const isAuthorized =
+    isMainGroup ||
+    cmdMsg.is_from_me ||
+    // For non-main groups that require triggers, check if sender is allowed
+    (() => {
+      const allowlistCfg = loadSenderAllowlist();
+      return isTriggerAllowed(deps.chatJid, cmdMsg.sender, allowlistCfg);
+    })();
+
+  if (!isAuthorized) {
+    // DENIED: silently consume the command by advancing the cursor past it.
     // Trade-off: other messages in the same batch are also consumed (cursor is
     // a high-water mark). Acceptable for this narrow edge case.
-    if (deps.canSenderInteract(cmdMsg)) {
-      await deps.sendMessage('Session commands require admin access.');
-    }
     deps.advanceCursor(cmdMsg.timestamp);
     return { handled: true, success: true };
   }
@@ -121,6 +134,78 @@ export async function handleSessionCommand(opts: {
     deps.advanceCursor(cmdMsg.timestamp);
     await deps.setTyping(false);
     return { handled: true, success: result.success };
+  }
+
+  // Handle /register command
+  if (command === '/register') {
+    logger.info({ group: groupName }, 'Register topic command');
+    await deps.setTyping(true);
+
+    if (!deps.registerTopic) {
+      await deps.sendMessage(
+        'Topic registration is not supported for this channel type.',
+      );
+      deps.advanceCursor(cmdMsg.timestamp);
+      await deps.setTyping(false);
+      return { handled: true, success: true };
+    }
+
+    const result = await deps.registerTopic();
+    await deps.sendMessage(result.message);
+    deps.advanceCursor(cmdMsg.timestamp);
+    await deps.setTyping(false);
+    return { handled: true, success: result.success };
+  }
+
+  // Handle /unregister command
+  if (command === '/unregister') {
+    logger.info({ group: groupName }, 'Unregister topic command');
+    await deps.setTyping(true);
+
+    if (!deps.unregisterTopic) {
+      await deps.sendMessage(
+        'Topic unregistration is not supported for this channel type.',
+      );
+      deps.advanceCursor(cmdMsg.timestamp);
+      await deps.setTyping(false);
+      return { handled: true, success: true };
+    }
+
+    const result = await deps.unregisterTopic();
+    await deps.sendMessage(result.message);
+    deps.advanceCursor(cmdMsg.timestamp);
+    await deps.setTyping(false);
+    return { handled: true, success: result.success };
+  }
+
+  // Handle /commands (and /help) command
+  if (command === '/commands') {
+    logger.info({ group: groupName }, 'Commands help requested');
+    await deps.setTyping(true);
+
+    const commandsHelp = `**Available Session Commands:**
+
+• **/register** - Register this topic to receive all messages without requiring @mention
+  Example: \`/register\`
+
+• **/unregister** - Unregister this topic (return to requiring @mention)
+  Example: \`/unregister\`
+
+• **/backfill** - Load previous messages from this topic into conversation context
+  Example: \`/backfill\`
+
+• **/compact** - Compress conversation context to save memory (requires @mention)
+  Example: \`@AssistantName /compact\`
+
+• **/commands** or **/help** - Show this help message
+  Example: \`/commands\`
+
+Session commands are meta-commands about the conversation itself.`;
+
+    await deps.sendMessage(commandsHelp);
+    deps.advanceCursor(cmdMsg.timestamp);
+    await deps.setTyping(false);
+    return { handled: true, success: true };
   }
 
   // AUTHORIZED: process pre-compact messages first, then run the command
