@@ -31,9 +31,10 @@ RUN apt-get update && apt-get install -y \
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
 
-# Configure git credential helper for Forgejo integration
+# Configure git credential helper and forgejo CLI for Forgejo integration
 COPY git-credential-helper.sh /usr/local/bin/git-credential-helper.sh
-RUN chmod +x /usr/local/bin/git-credential-helper.sh && \
+COPY forgejo /usr/local/bin/forgejo
+RUN chmod +x /usr/local/bin/git-credential-helper.sh /usr/local/bin/forgejo && \
     git config --system credential.helper /usr/local/bin/git-credential-helper.sh
 
 # Install agent-browser and claude-code globally

@@ -259,252 +259,155 @@ The task will run in that group's context with access to their files and memory.
 
 ## Forgejo Integration
 
-You have access to a local Forgejo instance for managing code repositories and pull requests.
+You have access to a local Forgejo instance (git.grgly.org) for managing code repositories.
 
-### REST API Access
+### The `forgejo` Command
 
-**⚠️ CRITICAL:** ALL Forgejo API calls MUST go through the credential proxy. Never connect directly to `$FORGEJO_URL` for API calls.
+**⚠️ CRITICAL:** Use the `forgejo` command for ALL Forgejo operations. Never use raw `git` commands, `curl` for API calls, or manual credential handling.
 
-**Proxy Base URL:** `http://host.docker.internal:3001/forgejo`
+The `forgejo` command is a unified CLI that handles:
+- Repository management
+- Git operations (with automatic credential injection)
+- Pull requests and issues
+- All API interactions
 
-The proxy automatically injects credentials. You don't have a token and don't need one.
-**Examples:**
-
-List your repositories:
+**Get help:**
 ```bash
-curl -s http://host.docker.internal:3001/forgejo/api/v1/user/repos | jq -r '.[].name'
+forgejo --help              # Show all commands
+forgejo repo --help         # Help for repo commands
+forgejo pr --help           # Help for PR commands
 ```
 
-Get repository details:
+**See the full reference:** `/workspace/global/docs/FORGEJO_CLI.md`
+
+### Common Workflows
+
+#### Create a New Repository
 ```bash
-curl -s http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO | jq
+forgejo repo create my-project --description "Project description"
+forgejo repo clone vanek/my-project
+cd my-project
+
+# Make changes
+forgejo add .
+forgejo commit "Initial implementation"
+forgejo push main
 ```
 
-Create a pull request:
+Repository creation automatically:
+- Initializes with README and MIT license
+- Adds gergely as admin collaborator
+- Sets up Zulip webhook to route events to #git stream
+
+#### Feature Branch + Pull Request
 ```bash
-curl -X POST http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Fix bug in parser",
-    "head": "feature-branch",
-    "base": "main",
-    "body": "Description of changes"
-  }' | jq
+# Create and switch to feature branch
+forgejo switch feature/new-feature
+
+# Make changes
+# ... edit files ...
+
+# Commit and push
+forgejo add .
+forgejo commit "Implement new feature"
+forgejo push feature/new-feature
+
+# Create pull request
+forgejo pr create --title "Add new feature" --body "Description of changes"
+
+# The PR is created and the URL is shown
+# Report the URL to the user for review
 ```
 
-List pull requests:
+#### Work with Existing PRs
 ```bash
-curl -s http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls | jq
+# List open PRs
+forgejo pr list
+
+# View PR details
+forgejo pr show 5
+
+# Check out a PR locally for testing
+forgejo pr checkout 5
+
+# Add a comment
+forgejo pr comment 5 "Looks good to me"
+
+# Merge (squash merge)
+forgejo pr merge 5
 ```
 
-Get PR details:
+#### Respond to Review Comments
 ```bash
-curl -s http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER | jq
+# Check out the PR branch
+forgejo pr checkout 12
+
+# Make requested changes
+# ... edit files ...
+
+# Commit and push
+forgejo add .
+forgejo commit "Address review feedback"
+forgejo push feature/description
+
+# Comment on the PR
+forgejo pr comment 12 "Fixed the issues you mentioned"
 ```
 
-**⚠️ Important:** Do NOT use the merge endpoint. Pull requests require human review and approval. After creating a PR, report the URL to the user for review.
-
-**API Documentation:** The API is Gitea-compatible. See https://try.gitea.io/api/swagger for full reference.
-
-### Git Operations
-
-**Note:** `$FORGEJO_URL` is ONLY for git clone/push operations. For API calls, use the proxy (see REST API Access section above).
-
-Git credentials are automatically provided via credential helper. Use normal git commands.
-
-**Git URL format:**
-
-The `FORGEJO_URL` environment variable contains your Forgejo server URL. Transform it for container use:
-
+#### Import External Repository
 ```bash
-# Check the configured URL
-echo "$FORGEJO_URL"
+# Clone from GitHub/Codeberg and create in Forgejo
+forgejo repo import https://github.com/user/awesome-lib awesome-lib
 
-# For localhost URLs (e.g., http://localhost:3000):
-# Replace 'localhost' with 'host.docker.internal'
-# Example: http://host.docker.internal:3000/OWNER/REPO.git
-
-# For remote URLs (e.g., https://forgejo.example.com):
-# Use the URL as-is
-# Example: https://forgejo.example.com/OWNER/REPO.git
+# This automatically:
+# - Clones the source repository
+# - Creates a new Forgejo repository
+# - Sets up remotes (original as 'upstream', Forgejo as 'origin')
+# - Pushes all branches and tags
+# - Adds gergely as collaborator
+# - Sets up Zulip webhook
 ```
 
-**Clone a repository:**
+#### Work with Issues
 ```bash
-# Construct git URL from FORGEJO_URL (auto-transform localhost)
-GIT_URL="${FORGEJO_URL/localhost/host.docker.internal}"
-git clone "$GIT_URL/OWNER/REPO.git"
-cd REPO
+# Create an issue
+forgejo issue create --title "Bug found" --body "Description" --labels bug,critical
+
+# List issues
+forgejo issue list
+forgejo issue list --state closed
+
+# View issue details
+forgejo issue show 3
+
+# Update an issue
+forgejo issue update 3 --labels bug,fixed
+
+# Comment on an issue
+forgejo issue comment 3 "Working on this now"
+
+# Close an issue
+forgejo issue close 3
 ```
 
-**Create feature branch and push:**
-```bash
-git checkout -b feature-branch
-# make changes
-git add .
-git commit -m "Implement feature"
-git push origin feature-branch
-```
+### Issue Labels
 
-**Pull latest changes:**
-```bash
-git pull origin main
-```
+When creating or updating issues, use these standard labels:
+- `bug` — Something isn't working
+- `enhancement` — New feature or request
+- `documentation` — Documentation improvements
+- `question` — Further information needed
+- `critical` — High priority, needs immediate attention
+- `wontfix` — This will not be worked on
 
-### Workflow: Code Changes + PR
+### Important Notes
 
-When asked to implement a feature with a PR:
+1. **Never use raw git commands** — always use `forgejo` instead
+2. **Never use curl for API calls** — `forgejo` handles all API operations
+3. **Pull requests require human review** — after creating a PR, report the URL to the user
+4. **Credentials are automatic** — the `forgejo` command handles authentication transparently
+5. **Webhook setup is automatic** — `forgejo repo create` and `forgejo repo import` set up Zulip webhooks
 
-1. **Clone the repository** (if not already present in workspace)
-   ```bash
-   GIT_URL="${FORGEJO_URL/localhost/host.docker.internal}"
-   git clone "$GIT_URL/OWNER/REPO.git"
-   cd REPO
-   ```
+### Reference
 
-2. **Create a feature branch**
-   ```bash
-   git checkout -b feature/description
-   ```
-
-3. **Make the code changes**
-   - Edit files as needed
-   - Test if applicable
-
-4. **Commit and push**
-   ```bash
-   git add .
-   git commit -m "Clear description of changes"
-   git push origin feature/description
-   ```
-
-5. **Create a pull request via API**
-   ```bash
-   PR_URL=$(curl -s -X POST http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls \
-     -H "Content-Type: application/json" \
-     -d '{
-       "title": "Feature: Description",
-       "head": "feature/description",
-       "base": "main",
-       "body": "## Changes\n\n- Item 1\n- Item 2\n\n## Testing\n\nDescribe testing done"
-     }' | jq -r '.html_url')
-   echo "Pull request created: $PR_URL"
-   ```
-
-6. **Report back to the user**
-   - Include PR URL
-   - Summarize changes made
-
-### Workflow: Responding to PR Review Comments
-
-When you see a PR review comment notification in Zulip:
-
-1. **Read the PR and review comments**
-   ```bash
-   # Get PR details
-   curl -s http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER | jq
-   
-   # Get all review comments
-   curl -s http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews | jq
-   ```
-
-2. **Fetch the PR branch and make changes**
-   ```bash
-   git fetch origin pull/PR_NUMBER/head:pr-PR_NUMBER
-   git checkout pr-PR_NUMBER
-   # Make the requested changes
-   git add .
-   git commit -m "Address review feedback"
-   git push origin pr-PR_NUMBER
-   ```
-
-3. **Reply to the review comment (optional)**
-   ```bash
-   curl -X POST http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews/REVIEW_ID/comments \
-     -H "Content-Type: application/json" \
-     -d '{"body": "Fixed in latest commit"}'
-   ```
-
-4. **Report back in Zulip**
-   Summarize the changes you made and confirm the issue is addressed.
-
-### PR Review API Endpoints
-
-```bash
-# List all reviews for a PR
-curl http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews
-
-# Get a specific review
-curl http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews/REVIEW_ID
-
-# List review comments
-curl http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews/REVIEW_ID/comments
-
-# Reply to a review comment
-curl -X POST http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews/REVIEW_ID/comments \
-  -H "Content-Type: application/json" \
-  -d '{"body": "Your reply here"}'
-
-# Create a new review (approve/request changes/comment)
-curl -X POST http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/pulls/PR_NUMBER/reviews \
-  -H "Content-Type: application/json" \
-  -d '{
-    "event": "COMMENT",
-    "body": "Overall feedback"
-  }'
-```
-
-### Setting Up Zulip Webhooks
-
-When working with a repository, you can programmatically create a webhook to route Forgejo events (pushes, PRs, reviews) to Zulip.
-
-**Prerequisites:** The following environment variables must be configured:
-- `$ZULIP_BASE_URL` — Your Zulip server URL (e.g., `https://chat.grgly.org`)
-- `$ZULIP_INCOMING_WEBHOOK_API_KEY` — API key for the incoming webhook integration (for Forgejo to post to Zulip)
-- `$ZULIP_GIT_STREAM_ID` — The numeric stream ID for git events (e.g., `6`)
-
-Check if they're set:
-```bash
-echo "Zulip: $ZULIP_BASE_URL, Stream: $ZULIP_GIT_STREAM_ID"
-```
-
-**Webhook URL format:**
-```bash
-"${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=REPO_NAME"
-```
-
-**Create a webhook:**
-```bash
-# Replace OWNER, REPO, and set topic to repository name
-curl -X POST "http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/hooks" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"type\": \"gitea\",
-    \"active\": true,
-    \"config\": {
-      "url": "${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=REPO_NAME",
-      \"content_type\": \"json\"
-    },
-    \"events\": [\"push\", \"pull_request\", \"pull_request_review\", \"pull_request_review_comment\", \"issue_comment\"]
-  }"
-```
-
-**Important:** Replace `REPO_NAME` in the topic parameter with the actual repository name.
-
-**Example for hello-world repository:**
-```bash
-curl -X POST "http://host.docker.internal:3001/forgejo/api/v1/repos/gergely/hello-world/hooks" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"type\": \"gitea\",
-    \"active\": true,
-    \"config\": {
-      "url": "${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=hello-world",
-      \"content_type\": \"json\"
-    },
-    \"events\": [\"push\", \"pull_request\", \"pull_request_review\", \"pull_request_review_comment\", \"issue_comment\"]
-  }"
-```
-
-All Forgejo events for `hello-world` will now appear in the Zulip topic `#git > hello-world`.
-```
+Full command reference: `/workspace/global/docs/FORGEJO_CLI.md`
