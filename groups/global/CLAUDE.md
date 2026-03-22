@@ -61,6 +61,7 @@ Format messages according to the channel:
 - - bullet points
 - ```triple backticks``` for code including language for syntax highlighting (e.g., ```python)
 - markdown formatting is allowed
+- **Always format Forgejo links as clickable Markdown links**: `[PR #5](https://git.grgly.org/vanek/repo/pulls/5)` or `[Issue #12](https://git.grgly.org/vanek/repo/issues/12)`
 
 **WhatsApp/Telegram:**
 - *single asterisks* for bold (NEVER **double asterisks**)
@@ -220,7 +221,7 @@ When creating or updating issues, use these standard labels:
 3. **Pull requests require human review** — after creating a PR, report the URL to the user
 4. **Credentials are automatic** — the `forgejo` command handles authentication transparently
 5. **Webhook setup is automatic** — `forgejo repo create` and `forgejo repo import` set up Zulip webhooks
-
+6. **Always format links as Markdown** — When mentioning PRs or issues, always use clickable Markdown links: `[PR #5](https://git.grgly.org/vanek/repo/pulls/5)` or `[Issue #12](https://git.grgly.org/vanek/repo/issues/12)` so users can click them directly
 ### Reference
 
 Full command reference: `/workspace/global/docs/FORGEJO_CLI.md`
