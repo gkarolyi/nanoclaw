@@ -229,6 +229,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount container scripts directory to /workspace/scripts
+  // All scripts in container/scripts/ become available in PATH
+  const scriptsDir = path.join(projectRoot, 'container', 'scripts');
+  if (fs.existsSync(scriptsDir)) {
+    mounts.push({
+      hostPath: scriptsDir,
+      containerPath: '/workspace/scripts',
+      readonly: true,
+    });
+  }
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(

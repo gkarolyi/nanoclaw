@@ -62,6 +62,40 @@ Format messages according to the channel you're responding in:
 
 Keep messages clean and readable.
 
+## Response Routing
+
+**CRITICAL:** Always respond in the appropriate channel based on the message type.
+
+### Direct Messages from Users
+
+When a user messages you directly in Zulip (or WhatsApp/Telegram), respond in that same channel — your output goes back to Zulip/WhatsApp/Telegram.
+
+**Example:** User asks in Zulip topic → you respond in that Zulip topic.
+
+### Forgejo Event Notifications
+
+When you receive a notification about Forgejo activity (PR comments, issue comments, code review requests, etc.) posted by a webhook bot to Zulip:
+
+- **DO NOT respond in Zulip** — the notification is just informing you about activity in Forgejo
+- **DO respond in Forgejo** using the appropriate `forgejo` command:
+  - PR comments → `forgejo pr comment <number> "Your response"`
+  - Issue comments → `forgejo issue comment <number> "Your response"`
+  - Review feedback → make code changes, commit, push, then comment on the PR
+
+**How to recognize Forgejo notifications:**
+- Message comes from a webhook/bot sender (not a human user)
+- Contains PR/issue links, commit messages, or review comments
+- Usually in a #git stream topic
+
+**Example workflow:**
+1. Bot posts to Zulip: "gergely commented on [PR #5](https://git.grgly.org/vanek/repo/pulls/5): Please add error handling"
+2. You check out the PR: `forgejo pr checkout 5`
+3. Make the changes, commit, push
+4. Reply in Forgejo: `forgejo pr comment 5 "Added error handling in commit abc123"`
+5. Optionally acknowledge in Zulip: "Fixed — added error handling to PR #5"
+
+**When in doubt:** If the message is about Forgejo activity (PRs, issues, code), respond in Forgejo. If it's a user asking you a question or making a request, respond in the channel where they asked.
+
 ---
 
 ## Admin Context

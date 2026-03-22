@@ -544,6 +544,8 @@ pr_show() {
     echo "Title: $(echo "$result" | jq -r '.title')"
     echo "State: $(echo "$result" | jq -r '.state')"
     echo "Author: $(echo "$result" | jq -r '.user.login')"
+    echo "Created: $(echo "$result" | jq -r '.created_at')"
+    echo "Updated: $(echo "$result" | jq -r '.updated_at')"
     echo "Head: $(echo "$result" | jq -r '.head.ref')"
     echo "Base: $(echo "$result" | jq -r '.base.ref')"
     echo "URL: $(echo "$result" | jq -r '.html_url')"
@@ -564,6 +566,21 @@ pr_show() {
     local files
     files=$(api_call GET "/repos/$repo/pulls/$number/files") || warn "Failed to get files"
     echo "$files" | jq -r '.[] | "  \(.filename) (+\(.additions)/-\(.deletions))"'
+    
+    # Get comments
+    echo ""
+    echo "Comments:"
+    local comments
+    comments=$(api_call GET "/repos/$repo/issues/$number/comments") || warn "Failed to get comments"
+    
+    local comment_count
+    comment_count=$(echo "$comments" | jq -r '. // [] | length')
+    
+    if [ "$comment_count" -eq 0 ]; then
+        echo "  No comments"
+    else
+        echo "$comments" | jq -r '. // [] | .[] | "\n  [\(.user.login)] \(.created_at)\n  \(.body)\n  ---"'
+    fi
 }
 
 pr_comment() {
@@ -799,11 +816,37 @@ issue_show() {
     echo "Title: $(echo "$result" | jq -r '.title')"
     echo "State: $(echo "$result" | jq -r '.state')"
     echo "Author: $(echo "$result" | jq -r '.user.login')"
-    echo "Labels: $(echo "$result" | jq -r '[.labels[].name] | join(", ") // "None"')"
+    echo "Created: $(echo "$result" | jq -r '.created_at')"
+    echo "Updated: $(echo "$result" | jq -r '.updated_at')"
+    echo "Labels: $(echo "$result" | jq -r '([.labels // [] | .[].name] | join(", ")) // "None"')"
+    
+    local assignees
+    assignees=$(echo "$result" | jq -r '([.assignees // [] | .[].login] | join(", ")) // "None"')
+    echo "Assignees: $assignees"
+    
+    local milestone
+    milestone=$(echo "$result" | jq -r '.milestone.title // "None"')
+    echo "Milestone: $milestone"
+    
     echo "URL: $(echo "$result" | jq -r '.html_url')"
     echo ""
     echo "Description:"
     echo "$result" | jq -r '.body // "No description"'
+    
+    # Get comments
+    echo ""
+    echo "Comments:"
+    local comments
+    comments=$(api_call GET "/repos/$repo/issues/$number/comments") || warn "Failed to get comments"
+    
+    local comment_count
+    comment_count=$(echo "$comments" | jq -r '. // [] | length')
+    
+    if [ "$comment_count" -eq 0 ]; then
+        echo "  No comments"
+    else
+        echo "$comments" | jq -r '. // [] | .[] | "\n  [\(.user.login)] \(.created_at)\n  \(.body)\n  ---"'
+    fi
 }
 
 issue_comment() {
