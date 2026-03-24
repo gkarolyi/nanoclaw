@@ -165,13 +165,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
-  // Per-group mise tool installations (persistent across container restarts)
+  // Per-group mise installations and state (persistent across container restarts)
   // Agents can install tools via mise and they'll persist for this group
-  const groupMiseDir = path.join(DATA_DIR, 'sessions', group.folder, 'mise');
-  fs.mkdirSync(groupMiseDir, { recursive: true });
+  // Mount entire ~/.local to persist both tools and mise state
+  const groupLocalDir = path.join(DATA_DIR, 'sessions', group.folder, 'local');
+  fs.mkdirSync(path.join(groupLocalDir, 'share', 'mise'), { recursive: true });
+  fs.mkdirSync(path.join(groupLocalDir, 'state', 'mise'), { recursive: true });
+  fs.mkdirSync(path.join(groupLocalDir, 'config', 'mise'), { recursive: true });
   mounts.push({
-    hostPath: groupMiseDir,
-    containerPath: '/home/node/.local/share/mise',
+    hostPath: groupLocalDir,
+    containerPath: '/home/node/.local',
     readonly: false,
   });
 

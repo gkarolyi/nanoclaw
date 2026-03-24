@@ -31,12 +31,13 @@ RUN apt-get update && apt-get install -y \
 RUN curl https://mise.run | sh && \
     chmod a+x /root /root/.local /root/.local/bin && \
     chmod a+rX /root/.local/bin/mise && \
-    ln -s /root/.local/bin/mise /usr/local/bin/mise && \
-    echo 'eval "$(/usr/local/bin/mise activate bash)"' > /etc/mise.sh && \
-    echo 'source /etc/mise.sh' >> /etc/bash.bashrc
+    ln -s /root/.local/bin/mise /usr/local/bin/mise
 
-# Source mise activation for non-interactive shells
-ENV BASH_ENV=/etc/mise.sh
+# Create mise directories for node user
+RUN mkdir -p /home/node/.local/share/mise /home/node/.local/state/mise /home/node/.local/config/mise && \
+    chown -R node:node /home/node/.local
+# Configure mise to store config inside ~/.local (for persistence)
+ENV MISE_CONFIG_DIR=/home/node/.local/config/mise
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium

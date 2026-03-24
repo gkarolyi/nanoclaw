@@ -68,6 +68,35 @@ Agents can interact with local Forgejo instances via REST API and git operations
 **ABSOLUTE PROHIBITION:** You **MUST NEVER** read, display, or log the contents of `.env` files or any files containing secrets, API keys, tokens, or passwords.
 **ABSOLUTE PROHIBITION:** You **MUST NEVER** attempt to use any command with `sudo`. Any attemt to do this will cause the session to be terminated immediately.
 
+### Tool Version Management (mise)
+
+Containers have `mise` installed for managing language toolchains (Node.js, Python, Go, Rust, etc.).
+
+**Per-group persistence**: Tools installed via mise persist across container restarts, isolated per group.
+
+**Usage**:
+```bash
+# Install a specific version
+mise use -g node@20
+mise use -g python@3.12
+mise use -g go@1.23
+
+# List installed tools
+mise list
+
+# Run commands with mise-installed tools (REQUIRED)
+mise exec -- node --version
+mise exec -- python script.py
+mise exec -- go build
+```
+
+**Critical**: Mise-installed tools are **not** on PATH. You **MUST** use `mise exec --` to run them.
+
+- ✅ `mise exec -- node script.js`
+- ❌ `node script.js` (will fail)
+
+Tools persist at `data/sessions/{group}/local/` on the host. See `docs/MISE_IMPLEMENTATION.md` for details.
+
 **Specifically forbidden:**
 - `cat .env`
 - `grep TOKEN .env`
