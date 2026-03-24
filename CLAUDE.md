@@ -66,6 +66,7 @@ Agents can interact with local Forgejo instances via REST API and git operations
 ### Secrets and Credentials
 
 **ABSOLUTE PROHIBITION:** You **MUST NEVER** read, display, or log the contents of `.env` files or any files containing secrets, API keys, tokens, or passwords.
+**ABSOLUTE PROHIBITION:** You **MUST NEVER** attempt to use any command with `sudo`. Any attemt to do this will cause the session to be terminated immediately.
 
 **Specifically forbidden:**
 - `cat .env`
