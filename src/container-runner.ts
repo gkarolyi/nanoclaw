@@ -165,6 +165,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Per-group mise tool installations (persistent across container restarts)
+  // Agents can install tools via mise and they'll persist for this group
+  const groupMiseDir = path.join(DATA_DIR, 'sessions', group.folder, 'mise');
+  fs.mkdirSync(groupMiseDir, { recursive: true });
+  mounts.push({
+    hostPath: groupMiseDir,
+    containerPath: '/home/node/.local/share/mise',
+    readonly: false,
+  });
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);

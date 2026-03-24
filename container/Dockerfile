@@ -27,6 +27,17 @@ RUN apt-get update && apt-get install -y \
     jq \
     && rm -rf /var/lib/apt/lists/*
 
+# Install mise for package management
+RUN curl https://mise.run | sh && \
+    chmod a+x /root /root/.local /root/.local/bin && \
+    chmod a+rX /root/.local/bin/mise && \
+    ln -s /root/.local/bin/mise /usr/local/bin/mise && \
+    echo 'eval "$(/usr/local/bin/mise activate bash)"' > /etc/mise.sh && \
+    echo 'source /etc/mise.sh' >> /etc/bash.bashrc
+
+# Source mise activation for non-interactive shells
+ENV BASH_ENV=/etc/mise.sh
+
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
