@@ -16,7 +16,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { query, HookCallback, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
+import { query, HookCallback, PreCompactHookInput } from './claude-backend.js';
 import { fileURLToPath } from 'url';
 
 interface ContainerInput {
@@ -485,6 +485,11 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
 
+  // Pass assistant name via env so the standalone precompact-hook script can use it
+  if (containerInput.assistantName) {
+    sdkEnv.NANOCLAW_ASSISTANT_NAME = containerInput.assistantName;
+  }
+
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
 
@@ -519,9 +524,14 @@ async function main(): Promise<void> {
     let hadError = false;
     let resultEmitted = false;
 
+
+      // Create a simple stream for the slash command
+      const slashStream = new MessageStream();
+      slashStream.push(trimmedPrompt);
+      slashStream.end();
     try {
       for await (const message of query({
-        prompt: trimmedPrompt,
+        prompt: slashStream,
         options: {
           cwd: '/workspace/group',
           resume: sessionId,
@@ -533,6 +543,17 @@ async function main(): Promise<void> {
           settingSources: ['project', 'user'] as const,
           hooks: {
             PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
+          },
+          mcpServers: {
+            nanoclaw: {
+              command: 'node',
+              args: [mcpServerPath],
+              env: {
+                NANOCLAW_CHAT_JID: containerInput.chatJid,
+                NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
+                NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+              },
+            },
           },
         },
       })) {

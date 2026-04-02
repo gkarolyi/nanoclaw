@@ -101,6 +101,28 @@ export interface Channel {
   setTyping?(jid: string, isTyping: boolean): Promise<void>;
   // Optional: sync group/chat names from the platform.
   syncGroups?(force: boolean): Promise<void>;
+  // Optional: override trigger requirements per-JID (e.g., auto-register streams).
+  shouldRequireTrigger?(jid: string): boolean;
+  // Optional: channel-specific auto-registration logic.
+  // Returns registration config if the channel wants to auto-register this JID, null otherwise.
+  handleAutoRegister?(
+    jid: string,
+    message: NewMessage,
+    context: {
+      registeredGroups: Record<string, RegisteredGroup>;
+      triggerPattern: RegExp;
+      assistantName: string;
+    },
+  ): { shouldRegister: boolean; group?: RegisteredGroup } | null;
+  // Optional: backfill message history for a JID.
+  backfillHistory?(jid: string): Promise<void>;
+  // Optional: topic registration (Zulip)
+  registerTopic?(
+    chatJid: string,
+  ): Promise<{ success: boolean; message: string }>;
+  unregisterTopic?(
+    chatJid: string,
+  ): Promise<{ success: boolean; message: string }>;
 }
 
 // Callback type that channels use to deliver inbound messages

@@ -9,6 +9,7 @@ import path from 'path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_RUNTIME,
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
@@ -164,6 +165,19 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Per-group mise installations and state (persistent across container restarts)
+  // Agents can install tools via mise and they'll persist for this group
+  // Mount entire ~/.local to persist both tools and mise state
+  const groupLocalDir = path.join(DATA_DIR, 'sessions', group.folder, 'local');
+  fs.mkdirSync(path.join(groupLocalDir, 'share', 'mise'), { recursive: true });
+  fs.mkdirSync(path.join(groupLocalDir, 'state', 'mise'), { recursive: true });
+  fs.mkdirSync(path.join(groupLocalDir, 'config', 'mise'), { recursive: true });
+  mounts.push({
+    hostPath: groupLocalDir,
+    containerPath: '/home/node/.local',
+    readonly: false,
+  });
+
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
   const groupIpcDir = resolveGroupIpcPath(group.folder);
@@ -228,6 +242,16 @@ function buildVolumeMounts(
     readonly: false,
   });
 
+  // Mount container scripts directory to /workspace/scripts
+  // All scripts in container/scripts/ become available in PATH
+  const scriptsDir = path.join(projectRoot, 'container', 'scripts');
+  if (fs.existsSync(scriptsDir)) {
+    mounts.push({
+      hostPath: scriptsDir,
+      containerPath: '/workspace/scripts',
+      readonly: true,
+    });
+  }
   // Additional mounts validated against external allowlist (tamper-proof from containers)
   if (group.containerConfig?.additionalMounts) {
     const validatedMounts = validateAdditionalMounts(
@@ -247,6 +271,11 @@ function buildContainerArgs(
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
+  // Use gVisor or other runtime if specified
+  if (CONTAINER_RUNTIME) {
+    args.push('--runtime', CONTAINER_RUNTIME);
+  }
+
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
 
@@ -265,6 +294,31 @@ function buildContainerArgs(
     args.push('-e', 'ANTHROPIC_API_KEY=placeholder');
   } else {
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
+  }
+
+  // Pass Forgejo URL to containers (but not token - proxy injects that)
+  const forgejoSecrets = readEnvFile(['FORGEJO_URL']);
+  if (forgejoSecrets.FORGEJO_URL) {
+    args.push('-e', `FORGEJO_URL=${forgejoSecrets.FORGEJO_URL}`);
+  }
+
+  // Pass Zulip configuration for webhook setup
+  const zulipSecrets = readEnvFile([
+    'ZULIP_INCOMING_WEBHOOK_API_KEY',
+    'ZULIP_BASE_URL',
+    'ZULIP_GIT_STREAM_ID',
+  ]);
+  if (zulipSecrets.ZULIP_INCOMING_WEBHOOK_API_KEY) {
+    args.push(
+      '-e',
+      `ZULIP_INCOMING_WEBHOOK_API_KEY=${zulipSecrets.ZULIP_INCOMING_WEBHOOK_API_KEY}`,
+    );
+  }
+  if (zulipSecrets.ZULIP_BASE_URL) {
+    args.push('-e', `ZULIP_BASE_URL=${zulipSecrets.ZULIP_BASE_URL}`);
+  }
+  if (zulipSecrets.ZULIP_GIT_STREAM_ID) {
+    args.push('-e', `ZULIP_GIT_STREAM_ID=${zulipSecrets.ZULIP_GIT_STREAM_ID}`);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -532,10 +586,20 @@ export async function runContainerAgent(
       const isError = code !== 0;
 
       if (isVerbose || isError) {
+        // On error, log input metadata only — not the full prompt.
+        // Full input is only included at verbose level to avoid
+        // persisting user conversation content on every non-zero exit.
+        if (isVerbose) {
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
+        } else {
+          logLines.push(
+            `=== Input Summary ===`,
+            `Prompt length: ${input.prompt.length} chars`,
+            `Session ID: ${input.sessionId || 'new'}`,
+            ``,
+          );
+        }
         logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
           `=== Container Args ===`,
           containerArgs.join(' '),
           ``,

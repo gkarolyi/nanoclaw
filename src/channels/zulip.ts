@@ -9,7 +9,15 @@ import {
   RegisteredGroup,
   Attachment,
 } from '../types.js';
-import { getLastZulipMessageTimestamp } from '../db.js';
+import {
+  getLastZulipMessageTimestamp,
+  getChannelSettings,
+  setChannelSetting,
+  deleteChannelSetting,
+  getChatByJid,
+  getRegisteredGroup,
+  setRegisteredGroup,
+} from '../db.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 export interface ZulipChannelOpts {
@@ -78,7 +86,7 @@ function stripHtml(content: string): string {
  * Normalize Zulip topic JIDs by stripping the ✔ prefix from resolved topics.
  * This ensures resolved and unresolved topics map to the same group.
  */
-function normalizeZulipJid(chatJid: string): string {
+export function normalizeZulipJid(chatJid: string): string {
   const parts = chatJid.split(':');
   if (parts.length >= 3 && parts[0] === 'zu') {
     const topic = parts.slice(2).join(':');
@@ -202,7 +210,7 @@ export class ZulipChannel implements Channel {
    * Backfill message history for a newly registered topic.
    * Fetches all messages from the topic and stores them in chronological order.
    */
-  async backfillTopicHistory(chatJid: string): Promise<void> {
+  async backfillHistory(chatJid: string): Promise<void> {
     if (!this.connected) {
       logger.warn('Zulip not connected, cannot backfill topic history');
       return;
@@ -545,12 +553,17 @@ export class ZulipChannel implements Channel {
     const chatName = isStream ? msg.display_recipient || chatJid : senderName;
 
     // Translate Zulip @**BotName** mentions to trigger format.
-    // Zulip uses @**Full Name** for mentions. We translate the bot's mention
-    // to @ASSISTANT_NAME so TRIGGER_PATTERN can match.
+    // Zulip uses @**Full Name** for mentions. We translate all occurrences
+    // to @ASSISTANT_NAME so TRIGGER_PATTERN can match correctly.
     if (this.botFullName) {
       const zulipMention = `@**${this.botFullName}**`;
-      if (content.includes(zulipMention) && !TRIGGER_PATTERN.test(content)) {
-        content = `@${ASSISTANT_NAME} ${content}`;
+      if (content.includes(zulipMention)) {
+        // Replace all occurrences of the Zulip mention with standard trigger
+        const mentionPattern = new RegExp(
+          zulipMention.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+          'g',
+        );
+        content = content.replace(mentionPattern, `@${ASSISTANT_NAME}`);
       }
     }
 
@@ -762,6 +775,161 @@ export class ZulipChannel implements Channel {
     return jid.startsWith('zu:');
   }
 
+  /**
+   * Override trigger requirements for auto-register streams and topics.
+   * Topics in ZULIP_AUTO_REGISTER_STREAMS don't require trigger.
+   * Topics explicitly registered via /register also don't require trigger.
+   */
+  shouldRequireTrigger(jid: string): boolean {
+    if (!jid.startsWith('zu:') || jid.startsWith('zu:dm:')) {
+      return true; // DMs use default behavior
+    }
+
+    // Normalize JID to handle resolved topics (strips ✔ prefix)
+    const normalizedJid = normalizeZulipJid(jid);
+
+    // Check settings first (most permissive) - allows self-healing when DB
+    // has requires_trigger=1 but topic/stream is in auto-register settings
+
+    // Check if this specific topic is registered
+    const autoRegisterTopics = getChannelSettings(
+      'zulip',
+      'auto_register_topic',
+    );
+    if (autoRegisterTopics.includes(normalizedJid)) {
+      return false;
+    }
+
+    // Check if the stream is auto-register
+    const parts = normalizedJid.split(':');
+    if (parts.length < 2) return true;
+
+    const streamId = parts[1];
+    const autoRegisterStreams = getChannelSettings(
+      'zulip',
+      'auto_register_stream',
+    );
+    return !autoRegisterStreams.includes(streamId);
+  }
+
+  /**
+   * Handle auto-registration for Zulip topics.
+   * Auto-registers topics in configured streams, explicitly registered topics,
+   * or when mentioned in new topics.
+   */
+  handleAutoRegister(
+    jid: string,
+    message: import('../types.js').NewMessage,
+    context: {
+      registeredGroups: Record<string, import('../types.js').RegisteredGroup>;
+      triggerPattern: RegExp;
+      assistantName: string;
+    },
+  ): {
+    shouldRegister: boolean;
+    group?: import('../types.js').RegisteredGroup;
+  } | null {
+    // Only handle Zulip topic JIDs
+    if (!jid.startsWith('zu:') || jid.startsWith('zu:dm:')) {
+      return null;
+    }
+
+    // Normalize JID to handle resolved topics (strips ✔ prefix)
+    const normalizedJid = normalizeZulipJid(jid);
+    const parts = normalizedJid.split(':');
+    if (parts.length < 3) return null; // Not a topic
+
+    const streamId = parts[1];
+    const topic = parts.slice(2).join(':');
+
+    // Check if this specific topic is explicitly registered
+    const autoRegisterTopics = getChannelSettings(
+      'zulip',
+      'auto_register_topic',
+    );
+    const isAutoRegisterTopic = autoRegisterTopics.includes(normalizedJid);
+
+    // Check if this stream is configured for auto-registration
+    const autoRegisterStreams = getChannelSettings(
+      'zulip',
+      'auto_register_stream',
+    );
+    const isAutoRegisterStream = autoRegisterStreams.includes(streamId);
+
+    let trigger: string;
+    let requiresTrigger: boolean;
+    let shouldAutoRegister: boolean;
+
+    if (isAutoRegisterTopic) {
+      // Topic is explicitly registered - no trigger required
+      trigger = `@${context.assistantName}`;
+      requiresTrigger = false;
+      shouldAutoRegister = true;
+    } else if (isAutoRegisterStream) {
+      // Stream is configured to always auto-register without trigger
+      trigger = `@${context.assistantName}`;
+      requiresTrigger = false;
+      shouldAutoRegister = true;
+    } else {
+      // Look for existing topics in the same stream to inherit settings
+      const parentStreamJid = `zu:${streamId}`;
+      let templateGroup = context.registeredGroups[parentStreamJid];
+
+      if (!templateGroup) {
+        const streamPrefix = `zu:${streamId}:`;
+        for (const [existingJid, group] of Object.entries(
+          context.registeredGroups,
+        )) {
+          if (existingJid.startsWith(streamPrefix) && existingJid !== jid) {
+            templateGroup = group;
+            break;
+          }
+        }
+      }
+
+      // Auto-register if we found a template group OR if message contains trigger
+      shouldAutoRegister =
+        templateGroup !== undefined ||
+        context.triggerPattern.test(message.content);
+
+      // Inherit settings from template group if it exists
+      // If no template: default to requiresTrigger=false when user triggered via @mention
+      trigger = templateGroup?.trigger ?? `@${context.assistantName}`;
+      requiresTrigger = templateGroup?.requiresTrigger ?? false;
+    }
+
+    if (!shouldAutoRegister) {
+      return { shouldRegister: false };
+    }
+
+    // Get stream name from chat metadata
+    const chat = getChatByJid(normalizedJid);
+    const streamName = chat?.name || `stream_${streamId}`;
+    const sanitizedStream = streamName
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-');
+    const sanitizedTopic = topic.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+    const hash = jid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
+    const folderName =
+      `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(0, 64);
+
+    logger.info(
+      { chatJid: normalizedJid, requiresTrigger, streamId },
+      'Auto-registering Zulip topic',
+    );
+
+    return {
+      shouldRegister: true,
+      group: {
+        name: `${streamName} / ${topic}`,
+        folder: folderName,
+        trigger,
+        added_at: new Date().toISOString(),
+        requiresTrigger,
+      },
+    };
+  }
+
   async disconnect(): Promise<void> {
     this.connected = false;
     if (this.abortController) {
@@ -769,6 +937,134 @@ export class ZulipChannel implements Channel {
       this.abortController = null;
     }
     logger.info('Zulip bot stopped');
+  }
+
+  async registerTopic(
+    chatJid: string,
+  ): Promise<{ success: boolean; message: string }> {
+    // Only supported for Zulip topics
+    if (!chatJid.startsWith('zu:') || chatJid.startsWith('zu:dm:')) {
+      return {
+        success: false,
+        message: 'Topic registration is only available for Zulip topics.',
+      };
+    }
+
+    const normalizedJid = normalizeZulipJid(chatJid);
+    const parts = normalizedJid.split(':');
+    if (parts.length < 3) {
+      return {
+        success: false,
+        message: 'This is not a Zulip topic.',
+      };
+    }
+
+    try {
+      const existingGroup = getRegisteredGroup(normalizedJid);
+
+      if (existingGroup) {
+        // Already registered — update DB to disable trigger requirement
+        setRegisteredGroup(normalizedJid, {
+          ...existingGroup,
+          requiresTrigger: false,
+        });
+
+        logger.info(
+          { chatJid: normalizedJid },
+          'Updated existing topic: trigger no longer required',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic updated. Agent will now respond to all messages without requiring @mention.',
+        };
+      } else {
+        // Not registered yet — add to settings so next message auto-registers
+        setChannelSetting('zulip', 'auto_register_topic', normalizedJid);
+
+        logger.info(
+          { chatJid: normalizedJid },
+          'Added topic to auto-register list',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic registered. Agent will respond to the next message without @mention.',
+        };
+      }
+    } catch (err: any) {
+      logger.error({ chatJid, err: err.message }, 'Failed to register topic');
+      return {
+        success: false,
+        message: `Failed to register topic: ${err.message}`,
+      };
+    }
+  }
+
+  async unregisterTopic(
+    chatJid: string,
+  ): Promise<{ success: boolean; message: string }> {
+    // Only supported for Zulip topics
+    if (!chatJid.startsWith('zu:') || chatJid.startsWith('zu:dm:')) {
+      return {
+        success: false,
+        message: 'Topic unregistration is only available for Zulip topics.',
+      };
+    }
+
+    const normalizedJid = normalizeZulipJid(chatJid);
+    const parts = normalizedJid.split(':');
+    if (parts.length < 3) {
+      return {
+        success: false,
+        message: 'This is not a Zulip topic.',
+      };
+    }
+
+    try {
+      const existingGroup = getRegisteredGroup(normalizedJid);
+
+      // Always remove from auto-register settings
+      deleteChannelSetting('zulip', 'auto_register_topic', normalizedJid);
+
+      if (existingGroup) {
+        // Update DB to require trigger
+        setRegisteredGroup(normalizedJid, {
+          ...existingGroup,
+          requiresTrigger: true,
+        });
+
+        logger.info(
+          { chatJid: normalizedJid },
+          'Updated existing topic: trigger now required',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic unregistered. Agent will now only respond when @mentioned.',
+        };
+      } else {
+        logger.info(
+          { chatJid: normalizedJid },
+          'Removed topic from auto-register list',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic unregistered successfully. The agent will now only respond when mentioned or triggered.',
+        };
+      }
+    } catch (err: any) {
+      logger.error({ chatJid, err: err.message }, 'Failed to unregister topic');
+      return {
+        success: false,
+        message: `Failed to unregister topic: ${err.message}`,
+      };
+    }
   }
 }
 

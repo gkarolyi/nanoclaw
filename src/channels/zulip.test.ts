@@ -19,7 +19,13 @@ vi.mock('../logger.js', () => ({
   },
 }));
 
+vi.mock('../db.js', () => ({
+  getChannelSettings: vi.fn(() => []),
+  getLastZulipMessageTimestamp: vi.fn(() => null),
+}));
+
 import { ZulipChannel, ZulipChannelOpts, zulipApi } from './zulip.js';
+import { getChannelSettings } from '../db.js';
 
 // --- Test helpers ---
 
@@ -391,7 +397,7 @@ describe('ZulipChannel', () => {
       );
     });
 
-    it('does not translate if message already matches trigger', () => {
+    it('replaces Zulip mention even when trigger already present', () => {
       const msg = createStreamMessage({
         content: '<p>@Andy @**Andy Bot** hello</p>',
       });
@@ -399,8 +405,9 @@ describe('ZulipChannel', () => {
 
       const call = (opts.onMessage as any).mock.calls[0];
       const content = call[1].content;
-      // Should NOT double-prepend
-      expect(content).not.toMatch(/^@Andy @Andy/);
+      // Should replace the Zulip mention, resulting in duplicate triggers
+      // extractSessionCommand will strip all leading triggers
+      expect(content).toBe('@Andy @Andy hello');
     });
 
     it('does not translate mentions of other users', () => {
@@ -736,6 +743,63 @@ describe('ZulipChannel', () => {
 
       const result = await zulipApi(testCreds, '/messages');
       expect(result).toEqual(mockResponse);
+    });
+  });
+
+  // --- shouldRequireTrigger with auto_register_topic ---
+
+  describe('shouldRequireTrigger with auto_register_topic', () => {
+    it('returns false for explicitly registered topics', () => {
+      const channel = new ZulipChannel(testCreds, createTestOpts());
+
+      // Mock getChannelSettings to return the topic JID
+      vi.mocked(getChannelSettings).mockImplementation((ch, key) => {
+        if (ch === 'zulip' && key === 'auto_register_topic') {
+          return ['zu:42:feature-ideas'];
+        }
+        return [];
+      });
+
+      expect(channel.shouldRequireTrigger('zu:42:feature-ideas')).toBe(false);
+    });
+
+    it('normalizes resolved topics when checking registration', () => {
+      const channel = new ZulipChannel(testCreds, createTestOpts());
+
+      vi.mocked(getChannelSettings).mockImplementation((ch, key) => {
+        if (ch === 'zulip' && key === 'auto_register_topic') {
+          return ['zu:42:feature-ideas']; // Normalized version stored
+        }
+        return [];
+      });
+
+      // Topic with resolved prefix should still match
+      expect(channel.shouldRequireTrigger('zu:42:✔ feature-ideas')).toBe(false);
+    });
+
+    it('returns true for non-registered topics not in auto-register stream', () => {
+      const channel = new ZulipChannel(testCreds, createTestOpts());
+
+      vi.mocked(getChannelSettings).mockReturnValue([]);
+
+      expect(channel.shouldRequireTrigger('zu:42:random-topic')).toBe(true);
+    });
+
+    it('prioritizes topic registration over stream registration', () => {
+      const channel = new ZulipChannel(testCreds, createTestOpts());
+
+      vi.mocked(getChannelSettings).mockImplementation((ch, key) => {
+        if (ch === 'zulip' && key === 'auto_register_topic') {
+          return ['zu:42:feature-ideas'];
+        }
+        if (ch === 'zulip' && key === 'auto_register_stream') {
+          return []; // Stream not auto-registered
+        }
+        return [];
+      });
+
+      // Topic should not require trigger even though stream is not auto-registered
+      expect(channel.shouldRequireTrigger('zu:42:feature-ideas')).toBe(false);
     });
   });
 });

@@ -1,9 +1,9 @@
 # NanoClaw Agent Container
-# Runs Claude Agent SDK in isolated Linux VM with browser automation
+# Runs Claude Code CLI in isolated Linux VM with browser automation
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium
+# Install system dependencies for Chromium and git credential helper
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
@@ -24,11 +24,30 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    jq \
     && rm -rf /var/lib/apt/lists/*
+
+# Install mise for package management
+RUN curl https://mise.run | sh && \
+    chmod a+x /root /root/.local /root/.local/bin && \
+    chmod a+rX /root/.local/bin/mise && \
+    ln -s /root/.local/bin/mise /usr/local/bin/mise
+
+# Create mise directories for node user
+RUN mkdir -p /home/node/.local/share/mise /home/node/.local/state/mise /home/node/.local/config/mise && \
+    chown -R node:node /home/node/.local
+# Configure mise to store config inside ~/.local (for persistence)
+ENV MISE_CONFIG_DIR=/home/node/.local/config/mise
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium
 ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium
+
+# Configure git credential helper and forgejo CLI for Forgejo integration
+COPY scripts/git-credential-helper.sh /usr/local/bin/git-credential-helper.sh
+COPY scripts/forgejo /usr/local/bin/forgejo
+RUN chmod +x /usr/local/bin/git-credential-helper.sh /usr/local/bin/forgejo && \
+    git config --system credential.helper /usr/local/bin/git-credential-helper.sh
 
 # Install agent-browser and claude-code globally
 RUN npm install -g agent-browser @anthropic-ai/claude-code
@@ -55,7 +74,7 @@ RUN mkdir -p /workspace/group /workspace/global /workspace/extra /workspace/ipc/
 # Container input (prompt, group info) is passed via stdin JSON.
 # Credentials are injected by the host's credential proxy — never passed here.
 # Follow-up messages arrive via IPC files in /workspace/ipc/input/
-RUN printf '#!/bin/bash\nset -e\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nnode /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
+RUN printf '#!/bin/bash\nset -e\nexport PATH=/workspace/scripts:$PATH\ncd /app && npx tsc --outDir /tmp/dist 2>&1 >&2\nln -s /app/node_modules /tmp/dist/node_modules\nchmod -R a-w /tmp/dist\ncat > /tmp/input.json\nexec node /tmp/dist/index.js < /tmp/input.json\n' > /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 # Set ownership to node user (non-root) for writable directories
 RUN chown -R node:node /workspace && chmod 777 /home/node

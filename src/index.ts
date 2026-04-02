@@ -9,7 +9,6 @@ import {
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
-  ZULIP_AUTO_REGISTER_STREAMS,
 } from './config.js';
 import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
@@ -36,7 +35,6 @@ import {
   getMessagesSince,
   getNewMessages,
   getRegisteredGroup,
-  getRouterState,
   initDatabase,
   setRegisteredGroup,
   deleteRegisteredGroup,
@@ -44,6 +42,7 @@ import {
   setSession,
   storeChatMetadata,
   storeMessage,
+  getRouterState,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -63,7 +62,6 @@ import {
 import {
   extractSessionCommand,
   handleSessionCommand,
-  isSessionCommandAllowed,
 } from './session-commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
@@ -260,15 +258,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const hasTrigger = TRIGGER_PATTERN.test(msg.content.trim());
         let reqTrigger = !isMainGroup && group.requiresTrigger !== false;
 
-        // Override for Zulip topics in auto-register streams
-        if (chatJid.startsWith('zu:') && !chatJid.startsWith('zu:dm:')) {
-          const parts = chatJid.split(':');
-          if (parts.length > 2) {
-            const streamId = parts[1];
-            if (ZULIP_AUTO_REGISTER_STREAMS.includes(streamId)) {
-              reqTrigger = false;
-            }
-          }
+        // Check if channel wants to override trigger requirement
+        if (reqTrigger && channel.shouldRequireTrigger) {
+          reqTrigger = channel.shouldRequireTrigger(chatJid);
         }
 
         return (
@@ -281,45 +273,99 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       },
       chatJid,
       triggerBackfill: async () => {
-        // Check if this is a Zulip topic
-        if (!chatJid.startsWith('zu:') || chatJid.startsWith('zu:dm:')) {
+        if (!channel.backfillHistory) {
           return {
             success: false,
-            message: 'Backfill is only supported for Zulip topics.',
+            message: 'Backfill is not available for this channel.',
           };
         }
 
-        const parts = chatJid.split(':');
-        if (parts.length < 3) {
+        try {
+          await channel.backfillHistory(chatJid);
+          return {
+            success: true,
+            message:
+              'Topic history backfilled successfully. Previous messages are now available in the conversation context.',
+          };
+        } catch (err: any) {
+          logger.error({ chatJid, err: err.message }, 'Backfill failed');
+          return {
+            success: false,
+            message: `Backfill failed: ${err.message}`,
+          };
+        }
+      },
+      registerTopic: async () => {
+        if (!channel.registerTopic) {
           return {
             success: false,
             message:
-              'Backfill requires a topic. Use /backfill in a specific topic.',
+              'Topic registration is not supported for this channel type.',
           };
         }
 
-        // Call backfillTopicHistory on the Zulip channel
-        if (channel && 'backfillTopicHistory' in channel) {
-          try {
-            await (channel as any).backfillTopicHistory(chatJid);
-            return {
-              success: true,
-              message:
-                'Topic history backfilled successfully. Previous messages are now available in the conversation context.',
-            };
-          } catch (err: any) {
-            logger.error({ chatJid, err: err.message }, 'Backfill failed');
-            return {
-              success: false,
-              message: `Backfill failed: ${err.message}`,
-            };
+        try {
+          const result = await channel.registerTopic(chatJid);
+
+          // Reload from DB to sync in-memory cache
+          if (result.success) {
+            const updated = getRegisteredGroup(chatJid);
+            if (updated) {
+              registeredGroups[chatJid] = updated;
+              logger.debug(
+                { chatJid, requiresTrigger: updated.requiresTrigger },
+                'Synced in-memory group state after registration',
+              );
+            }
           }
+
+          return result;
+        } catch (err: any) {
+          logger.error(
+            { chatJid, err: err.message },
+            'Failed to register topic',
+          );
+          return {
+            success: false,
+            message: `Failed to register topic: ${err.message}`,
+          };
+        }
+      },
+      unregisterTopic: async () => {
+        if (!channel.unregisterTopic) {
+          return {
+            success: false,
+            message:
+              'Topic unregistration is not supported for this channel type.',
+          };
         }
 
-        return {
-          success: false,
-          message: 'Backfill is not available for this channel.',
-        };
+        try {
+          const result = await channel.unregisterTopic(chatJid);
+
+          // Reload from DB to sync in-memory cache
+          if (result.success) {
+            const updated = getRegisteredGroup(chatJid);
+            if (updated) {
+              registeredGroups[chatJid] = updated;
+              logger.debug(
+                { chatJid, requiresTrigger: updated.requiresTrigger },
+                'Synced in-memory group state after unregistration',
+              );
+            }
+          }
+
+          return result;
+        } catch (err: any) {
+          logger.error(
+            { chatJid, err: err.message },
+            'Failed to unregister topic',
+          );
+          return {
+            success: false,
+            message: `Failed to unregister topic: ${err.message}`,
+          };
+        }
       },
     },
   });
@@ -327,24 +373,19 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // --- End session command interception ---
 
   // For non-main groups, check if trigger is required and present
-  // Check if this is a Zulip topic in an auto-register stream (overrides group setting)
   let requiresTrigger = !isMainGroup && group.requiresTrigger !== false;
-  if (chatJid.startsWith('zu:') && !chatJid.startsWith('zu:dm:')) {
-    const parts = chatJid.split(':');
-    if (parts.length > 2) {
-      const streamId = parts[1];
-      if (ZULIP_AUTO_REGISTER_STREAMS.includes(streamId)) {
-        requiresTrigger = false; // Stream is configured to not require triggers
-      }
-    }
+  if (requiresTrigger && channel.shouldRequireTrigger) {
+    requiresTrigger = channel.shouldRequireTrigger(chatJid);
   }
 
   if (requiresTrigger) {
     const allowlistCfg = loadSenderAllowlist();
     const hasTrigger = missedMessages.some(
       (m) =>
-        TRIGGER_PATTERN.test(m.content.trim()) &&
-        (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+        (TRIGGER_PATTERN.test(m.content.trim()) &&
+          (m.is_from_me ||
+            isTriggerAllowed(chatJid, m.sender, allowlistCfg))) ||
+        extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
     );
     if (!hasTrigger) {
       return true;
@@ -392,7 +433,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
           : JSON.stringify(result.result);
       // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
       const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
       if (text) {
         await channel.sendMessage(chatJid, text);
         outputSentToUser = true;
@@ -570,17 +611,27 @@ async function startMessageLoop(): Promise<void> {
           const loopCmdMsg = groupMessages.find(
             (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
           );
-
           if (loopCmdMsg) {
             // Only close active container if the sender is authorized — otherwise an
             // untrusted user could kill in-flight work by sending /compact (DoS).
             // closeStdin no-ops internally when no container is active.
-            if (
-              isSessionCommandAllowed(
-                isMainGroup,
-                loopCmdMsg.is_from_me === true,
-              )
-            ) {
+            // Authorization: main group OR sender can normally interact
+            const hasTrigger = TRIGGER_PATTERN.test(loopCmdMsg.content.trim());
+            let reqTrigger = !isMainGroup && group.requiresTrigger !== false;
+            if (reqTrigger && channel?.shouldRequireTrigger) {
+              reqTrigger = channel.shouldRequireTrigger(chatJid);
+            }
+            const isAuthorized =
+              isMainGroup ||
+              !reqTrigger ||
+              (hasTrigger &&
+                (loopCmdMsg.is_from_me ||
+                  isTriggerAllowed(
+                    chatJid,
+                    loopCmdMsg.sender,
+                    loadSenderAllowlist(),
+                  )));
+            if (isAuthorized) {
               queue.closeStdin(chatJid);
             }
             // Enqueue so processGroupMessages handles auth + cursor advancement.
@@ -593,15 +644,9 @@ async function startMessageLoop(): Promise<void> {
 
           let needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
-          // Override for Zulip topics in auto-register streams
-          if (chatJid.startsWith('zu:') && !chatJid.startsWith('zu:dm:')) {
-            const parts = chatJid.split(':');
-            if (parts.length > 2) {
-              const streamId = parts[1];
-              if (ZULIP_AUTO_REGISTER_STREAMS.includes(streamId)) {
-                needsTrigger = false;
-              }
-            }
+          // Check if channel wants to override trigger requirement
+          if (needsTrigger && channel?.shouldRequireTrigger) {
+            needsTrigger = channel.shouldRequireTrigger(chatJid);
           }
 
           // For non-main groups, only act on trigger messages.
@@ -611,9 +656,10 @@ async function startMessageLoop(): Promise<void> {
             const allowlistCfg = loadSenderAllowlist();
             const hasTrigger = groupMessages.some(
               (m) =>
-                TRIGGER_PATTERN.test(m.content.trim()) &&
-                (m.is_from_me ||
-                  isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
+                (TRIGGER_PATTERN.test(m.content.trim()) &&
+                  (m.is_from_me ||
+                    isTriggerAllowed(chatJid, m.sender, allowlistCfg))) ||
+                extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
             );
             if (!hasTrigger) continue;
           }
@@ -757,96 +803,38 @@ async function main(): Promise<void> {
         return;
       }
 
-      // Auto-register Zulip topics when mentioned or when parent stream is registered
-      if (
-        !registeredGroups[chatJid] &&
-        chatJid.startsWith('zu:') &&
-        !chatJid.startsWith('zu:dm:')
-      ) {
-        const parts = chatJid.split(':');
-        if (parts.length > 2) {
-          const streamId = parts[1];
-          const topic = parts.slice(2).join(':');
-          // Check if this stream is configured for auto-registration
-          const isAutoRegisterStream =
-            ZULIP_AUTO_REGISTER_STREAMS.includes(streamId);
+      const channel = findChannel(channels, chatJid);
+      if (!channel) {
+        logger.warn({ chatJid }, 'No channel owns JID, skipping message');
+        return;
+      }
 
-          let trigger: string;
-          let requiresTrigger: boolean;
-          let shouldAutoRegister: boolean;
+      // Channel-specific auto-registration
+      if (!registeredGroups[chatJid] && channel.handleAutoRegister) {
+        const result = channel.handleAutoRegister(chatJid, msg, {
+          registeredGroups,
+          triggerPattern: TRIGGER_PATTERN,
+          assistantName: ASSISTANT_NAME,
+        });
 
-          if (isAutoRegisterStream) {
-            // Stream is configured to always auto-register without trigger
-            trigger = `@${ASSISTANT_NAME}`;
-            requiresTrigger = false;
-            shouldAutoRegister = true;
-          } else {
-            // Look for existing topics in the same stream to inherit settings
-            const parentStreamJid = `zu:${streamId}`;
-            let templateGroup = registeredGroups[parentStreamJid];
+        if (result) {
+          if (result.shouldRegister && result.group) {
+            registerGroup(chatJid, result.group);
 
-            if (!templateGroup) {
-              const streamPrefix = `zu:${streamId}:`;
-              for (const [jid, group] of Object.entries(registeredGroups)) {
-                if (jid.startsWith(streamPrefix) && jid !== chatJid) {
-                  templateGroup = group;
-                  break;
-                }
-              }
-            }
-
-            // Auto-register if we found a template group OR if message contains trigger
-            shouldAutoRegister =
-              templateGroup !== undefined || TRIGGER_PATTERN.test(msg.content);
-
-            // Inherit settings from template group if it exists, otherwise use defaults
-            trigger = templateGroup?.trigger ?? `@${ASSISTANT_NAME}`;
-            requiresTrigger = templateGroup?.requiresTrigger ?? true;
-          }
-
-          if (shouldAutoRegister) {
-            const streamName = `stream_${streamId}`;
-            const sanitizedStream = streamName
-              .toLowerCase()
-              .replace(/[^a-z0-9]+/g, '-');
-            const sanitizedTopic = topic
-              .toLowerCase()
-              .replace(/[^a-z0-9]+/g, '-');
-            const hash = chatJid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
-            const folderName =
-              `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(
-                0,
-                64,
-              );
-
-            registerGroup(chatJid, {
-              name: `${streamName} / ${topic}`,
-              folder: folderName,
-              trigger,
-              added_at: new Date().toISOString(),
-              requiresTrigger,
-            });
-
-            // Backfill topic history so agent has access to previous messages
-            const channel = findChannel(channels, chatJid);
-            if (channel && 'backfillTopicHistory' in channel) {
+            // Backfill history if channel supports it
+            if (channel.backfillHistory) {
               // Fire and forget - don't block message processing
-              (channel as any)
-                .backfillTopicHistory(chatJid)
-                .catch((err: any) => {
-                  logger.error(
-                    { chatJid, err: err.message },
-                    'Failed to backfill topic history',
-                  );
-                });
+              channel.backfillHistory(chatJid).catch((err: any) => {
+                logger.error(
+                  { chatJid, err: err.message },
+                  'Failed to backfill history',
+                );
+              });
             }
-          } else {
-            // Not registered and not auto-registering, skip
+          } else if (!result.shouldRegister) {
+            // Channel says don't register and skip this message
             return;
           }
-        } else if (!registeredGroups[chatJid]) {
-          // Not registered and not auto-registering, skip
-          return;
         }
       }
 
@@ -987,6 +975,21 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) =>
       writeGroupsSnapshot(gf, im, ag, rj),
+    onTasksChanged: () => {
+      const tasks = getAllTasks();
+      const taskRows = tasks.map((t) => ({
+        id: t.id,
+        groupFolder: t.group_folder,
+        prompt: t.prompt,
+        schedule_type: t.schedule_type,
+        schedule_value: t.schedule_value,
+        status: t.status,
+        next_run: t.next_run,
+      }));
+      for (const group of Object.values(registeredGroups)) {
+        writeTasksSnapshot(group.folder, group.isMain === true, taskRows);
+      }
+    },
   });
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();

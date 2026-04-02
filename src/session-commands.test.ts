@@ -2,7 +2,6 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   extractSessionCommand,
   handleSessionCommand,
-  isSessionCommandAllowed,
 } from './session-commands.js';
 import type { NewMessage } from './types.js';
 import type { SessionCommandDeps } from './session-commands.js';
@@ -39,23 +38,37 @@ describe('extractSessionCommand', () => {
   it('is case-sensitive for the command', () => {
     expect(extractSessionCommand('/Compact', trigger)).toBeNull();
   });
-});
 
-describe('isSessionCommandAllowed', () => {
-  it('allows main group regardless of sender', () => {
-    expect(isSessionCommandAllowed(true, false)).toBe(true);
+  it('detects /register as standalone command', () => {
+    expect(extractSessionCommand('/register', trigger)).toBe('/register');
   });
 
-  it('allows trusted/admin sender (is_from_me) in non-main group', () => {
-    expect(isSessionCommandAllowed(false, true)).toBe(true);
+  it('does not detect /register with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy /register', trigger)).toBeNull();
   });
 
-  it('denies untrusted sender in non-main group', () => {
-    expect(isSessionCommandAllowed(false, false)).toBe(false);
+  it('detects /unregister as standalone command', () => {
+    expect(extractSessionCommand('/unregister', trigger)).toBe('/unregister');
   });
 
-  it('allows trusted sender in main group', () => {
-    expect(isSessionCommandAllowed(true, true)).toBe(true);
+  it('does not detect /unregister with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy /unregister', trigger)).toBeNull();
+  });
+
+  it('detects /backfill as standalone command', () => {
+    expect(extractSessionCommand('/backfill', trigger)).toBe('/backfill');
+  });
+
+  it('does not detect /backfill with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy /backfill', trigger)).toBeNull();
+  });
+
+  it('detects /commands as standalone command', () => {
+    expect(extractSessionCommand('/commands', trigger)).toBe('/commands');
+  });
+
+  it('detects /help as alias for /commands', () => {
+    expect(extractSessionCommand('/help', trigger)).toBe('/commands');
   });
 });
 
@@ -124,7 +137,7 @@ describe('handleSessionCommand', () => {
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 
-  it('sends denial to interactable sender in non-main group', async () => {
+  it('allows interactable sender in non-main group', async () => {
     const deps = makeDeps();
     const result = await handleSessionCommand({
       missedMessages: [makeMsg('/compact', { is_from_me: false })],
@@ -135,10 +148,11 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.sendMessage).toHaveBeenCalledWith(
-      'Session commands require admin access.',
+    expect(deps.runAgent).toHaveBeenCalledWith(
+      '/compact',
+      expect.any(Function),
     );
-    expect(deps.runAgent).not.toHaveBeenCalled();
+    expect(deps.sendMessage).not.toHaveBeenCalled();
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 
@@ -243,6 +257,132 @@ describe('handleSessionCommand', () => {
     expect(result).toEqual({ handled: true, success: false });
     expect(deps.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('Failed to process'),
+    );
+  });
+
+  it('handles /register command', async () => {
+    const registerTopic = vi.fn().mockResolvedValue({
+      success: true,
+      message: 'Topic registered successfully.',
+    });
+    const deps = makeDeps({ registerTopic });
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/register', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(registerTopic).toHaveBeenCalled();
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Topic registered successfully.',
+    );
+    expect(deps.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('handles /register when not supported', async () => {
+    const deps = makeDeps(); // No registerTopic function
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/register', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Topic registration is not supported for this channel type.',
+    );
+    expect(deps.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('handles /unregister command', async () => {
+    const unregisterTopic = vi.fn().mockResolvedValue({
+      success: true,
+      message: 'Topic unregistered successfully.',
+    });
+    const deps = makeDeps({ unregisterTopic });
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/unregister', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(unregisterTopic).toHaveBeenCalled();
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Topic unregistered successfully.',
+    );
+    expect(deps.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('handles /unregister when not supported', async () => {
+    const deps = makeDeps(); // No unregisterTopic function
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/unregister', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Topic unregistration is not supported for this channel type.',
+    );
+    expect(deps.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('handles /commands command', async () => {
+    const deps = makeDeps();
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/commands', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Available Session Commands'),
+    );
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('/register'),
+    );
+    expect(deps.advanceCursor).toHaveBeenCalled();
+  });
+
+  it('handles /help as alias for /commands', async () => {
+    const deps = makeDeps();
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/help', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Available Session Commands'),
     );
   });
 });

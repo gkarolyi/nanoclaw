@@ -1,0 +1,1015 @@
+#!/bin/bash
+set -euo pipefail
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Forgejo CLI - Unified interface for all Forgejo operations
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+# Configuration
+FORGEJO_API_BASE="http://host.docker.internal:3001/forgejo/api/v1"
+FORGEJO_URL="${FORGEJO_URL:-https://git.grgly.org}"
+ZULIP_BASE_URL="${ZULIP_BASE_URL:-}"
+ZULIP_INCOMING_WEBHOOK_API_KEY="${ZULIP_INCOMING_WEBHOOK_API_KEY:-}"
+ZULIP_GIT_STREAM_ID="${ZULIP_GIT_STREAM_ID:-}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Helper Functions
+# ═══════════════════════════════════════════════════════════════════════════
+
+error() {
+    echo -e "${RED}Error: $*${NC}" >&2
+    exit 1
+}
+
+success() {
+    echo -e "${GREEN}$*${NC}"
+}
+
+warn() {
+    echo -e "${YELLOW}Warning: $*${NC}" >&2
+}
+
+# Get Forgejo credentials from credential helper
+get_credentials() {
+    local host="${1:-git.grgly.org}"
+    local response
+    response=$(curl -s -X POST http://host.docker.internal:3001/git-credentials \
+        -H "Content-Type: application/json" \
+        -d "{\"host\":\"$host\"}" 2>/dev/null) || error "Failed to fetch credentials from proxy"
+    
+    local username password
+    username=$(echo "$response" | jq -r '.username // empty')
+    password=$(echo "$response" | jq -r '.password // empty')
+    
+    if [ -z "$username" ] || [ -z "$password" ]; then
+        error "No credentials found for $host"
+    fi
+    
+    echo "$username:$password"
+}
+
+# Get just the token (password) from credentials
+get_token() {
+    local creds
+    creds=$(get_credentials "${1:-git.grgly.org}")
+    echo "${creds#*:}"
+}
+
+# Get authenticated username
+get_username() {
+    local creds
+    creds=$(get_credentials "${1:-git.grgly.org}")
+    echo "${creds%%:*}"
+}
+
+# Make authenticated API call
+api_call() {
+    local method="$1"
+    local endpoint="$2"
+    shift 2
+    
+    local url="${FORGEJO_API_BASE}${endpoint}"
+    local response http_code
+    
+    response=$(curl -s -w "\n%{http_code}" -X "$method" "$url" "$@")
+    http_code=$(echo "$response" | tail -n1)
+    response=$(echo "$response" | sed '$d')
+    
+    if [[ "$http_code" -ge 200 && "$http_code" -lt 300 ]]; then
+        echo "$response"
+        return 0
+    else
+        echo "$response" >&2
+        return 1
+    fi
+}
+
+# Get current git repository owner/name from remote
+get_current_repo() {
+    if ! git rev-parse --git-dir &>/dev/null; then
+        error "Not in a git repository"
+    fi
+    
+    local remote_url
+    remote_url=$(git remote get-url origin 2>/dev/null) || error "No origin remote found"
+    
+    # Extract owner/repo from URL (handles both HTTPS and SSH)
+    if [[ "$remote_url" =~ ([^/:]+)/([^/]+)(\.git)?$ ]]; then
+        local owner="${BASH_REMATCH[1]}"
+        local repo="${BASH_REMATCH[2]%.git}"
+        echo "$owner/$repo"
+    else
+        error "Could not parse repository from remote URL: $remote_url"
+    fi
+}
+
+# Get current branch
+get_current_branch() {
+    git rev-parse --abbrev-ref HEAD 2>/dev/null || error "Could not determine current branch"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Repository Operations
+# ═══════════════════════════════════════════════════════════════════════════
+
+repo_create() {
+    local name=""
+    local description=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --description)
+                description="$2"
+                shift 2
+                ;;
+            -*)
+                error "Unknown option: $1"
+                ;;
+            *)
+                if [ -z "$name" ]; then
+                    name="$1"
+                else
+                    error "Unexpected argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    [ -z "$name" ] && error "Repository name required"
+    
+    local username
+    username=$(get_username)
+    
+    # Create repository
+    local payload
+    payload=$(jq -n \
+        --arg name "$name" \
+        --arg desc "$description" \
+        '{
+            name: $name,
+            description: $desc,
+            private: false,
+            auto_init: true,
+            readme: "Default",
+            license: "MIT"
+        }')
+    
+    local result
+    if ! result=$(api_call POST "/user/repos" \
+        -H "Content-Type: application/json" \
+        -d "$payload"); then
+        error "Failed to create repository"
+    fi
+    
+    local clone_url
+    clone_url=$(echo "$result" | jq -r '.clone_url')
+    success "Created repository: $name"
+    echo "URL: $clone_url"
+    
+    # Add gergely as admin collaborator
+    if ! api_call PUT "/repos/$username/$name/collaborators/gergely" \
+        -H "Content-Type: application/json" \
+        -d '{"permission": "admin"}' &>/dev/null; then
+        warn "Failed to add gergely as collaborator"
+    else
+        echo "Added gergely as admin collaborator"
+    fi
+    
+    # Set up Zulip webhook
+    if [ -n "$ZULIP_BASE_URL" ] && [ -n "$ZULIP_INCOMING_WEBHOOK_API_KEY" ] && [ -n "$ZULIP_GIT_STREAM_ID" ]; then
+        local webhook_url="${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=${name}"
+        local webhook_payload
+        webhook_payload=$(jq -n \
+            --arg url "$webhook_url" \
+            '{
+                type: "gitea",
+                active: true,
+                config: {
+                    url: $url,
+                    content_type: "json"
+                },
+                events: ["push", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"]
+            }')
+        
+        if ! api_call POST "/repos/$username/$name/hooks" \
+            -H "Content-Type: application/json" \
+            -d "$webhook_payload" &>/dev/null; then
+            warn "Failed to set up Zulip webhook"
+        else
+            echo "Set up Zulip webhook"
+        fi
+    fi
+}
+
+repo_info() {
+    local name="$1"
+    [ -z "$name" ] && error "Repository name required"
+    
+    local username
+    username=$(get_username)
+    
+    local result
+    result=$(api_call GET "/repos/$username/$name") || error "Failed to get repository info"
+    
+    echo "Repository: $(echo "$result" | jq -r '.name')"
+    echo "Private: $(echo "$result" | jq -r '.private')"
+    echo "Description: $(echo "$result" | jq -r '.description // "None"')"
+    echo "URL: $(echo "$result" | jq -r '.html_url')"
+    echo "Clone URL: $(echo "$result" | jq -r '.clone_url')"
+    echo "Default Branch: $(echo "$result" | jq -r '.default_branch')"
+}
+
+repo_list() {
+    local username
+    username=$(get_username)
+    
+    local result
+    result=$(api_call GET "/user/repos") || error "Failed to list repositories"
+    
+    echo "$result" | jq -r '.[] | "\(.name)\t\(.private | if . then "private" else "public" end)\t\(.html_url)"' | \
+        while IFS=$'\t' read -r name privacy url; do
+            echo "$name ($privacy) - $url"
+        done
+}
+
+repo_import() {
+    local source_url=""
+    local new_name=""
+    local description=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --description)
+                description="$2"
+                shift 2
+                ;;
+            -*)
+                error "Unknown option: $1"
+                ;;
+            *)
+                if [ -z "$source_url" ]; then
+                    source_url="$1"
+                elif [ -z "$new_name" ]; then
+                    new_name="$1"
+                else
+                    error "Unexpected argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    [ -z "$source_url" ] && error "Source URL required"
+    [ -z "$new_name" ] && error "New repository name required"
+    
+    # Clone from source
+    echo "Cloning from $source_url..."
+    git clone "$source_url" "$new_name" || error "Failed to clone source repository"
+    
+    cd "$new_name" || error "Failed to enter cloned directory"
+    
+    # Rename origin to upstream
+    git remote rename origin upstream
+    
+    # Create new repo in Forgejo
+    echo "Creating repository in Forgejo..."
+    repo_create "$new_name" ${description:+--description "$description"}
+    
+    # Add Forgejo as origin
+    local username
+    username=$(get_username)
+    local forgejo_url="${FORGEJO_URL}/${username}/${new_name}.git"
+    git remote add origin "$forgejo_url"
+    
+    # Push all branches and tags
+    echo "Pushing to Forgejo..."
+    git push origin --all || warn "Failed to push all branches"
+    git push origin --tags || warn "Failed to push tags"
+    
+    success "Import complete"
+    echo "Repository: ${FORGEJO_URL}/${username}/${new_name}"
+}
+
+repo_clone() {
+    local repo_or_url="$1"
+    [ -z "$repo_or_url" ] && error "Repository or URL required"
+    
+    local clone_url
+    if [[ "$repo_or_url" == http* ]]; then
+        # External URL
+        clone_url="$repo_or_url"
+    else
+        # Forgejo repo (owner/repo format)
+        clone_url="${FORGEJO_URL}/${repo_or_url}.git"
+    fi
+    
+    git clone "$clone_url" || error "Failed to clone repository"
+    success "Cloned $(basename "$clone_url" .git)"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Code Operations
+# ═══════════════════════════════════════════════════════════════════════════
+
+code_push() {
+    local branch="$1"
+    [ -z "$branch" ] && error "Branch name required"
+    
+    if ! git rev-parse --git-dir &>/dev/null; then
+        error "Not in a git repository"
+    fi
+    
+    # Set up tracking if needed
+    if ! git config "branch.$branch.remote" &>/dev/null; then
+        git push -u origin "$branch" || error "Failed to push branch"
+    else
+        git push origin "$branch" || error "Failed to push branch"
+    fi
+    
+    success "Pushed $branch to origin"
+}
+
+code_switch() {
+    local branch="$1"
+    [ -z "$branch" ] && error "Branch name required"
+    
+    if ! git rev-parse --git-dir &>/dev/null; then
+        error "Not in a git repository"
+    fi
+    
+    # Check if branch exists locally
+    if git rev-parse --verify "$branch" &>/dev/null; then
+        git switch "$branch" || error "Failed to switch to $branch"
+        success "Switched to $branch"
+    # Check if branch exists on remote
+    elif git ls-remote --exit-code --heads origin "$branch" &>/dev/null; then
+        git switch -t "origin/$branch" || error "Failed to create tracking branch"
+        success "Switched to $branch (tracking origin/$branch)"
+    else
+        # Create new branch and push
+        git switch -c "$branch" || error "Failed to create branch"
+        git push -u origin "$branch" || error "Failed to push new branch"
+        success "Created and switched to $branch"
+    fi
+}
+
+code_tag_create() {
+    local tag_name="$1"
+    local message="${2:-}"
+    
+    [ -z "$tag_name" ] && error "Tag name required"
+    
+    if ! git rev-parse --git-dir &>/dev/null; then
+        error "Not in a git repository"
+    fi
+    
+    if [ -n "$message" ]; then
+        git tag -a "$tag_name" -m "$message" || error "Failed to create tag"
+    else
+        git tag -a "$tag_name" || error "Failed to create tag"
+    fi
+    
+    git push origin "$tag_name" || error "Failed to push tag"
+    success "Created and pushed tag: $tag_name"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Git Workflow
+# ═══════════════════════════════════════════════════════════════════════════
+
+git_status() {
+    git status "$@"
+}
+
+git_diff() {
+    git diff "$@"
+}
+
+git_add() {
+    [ $# -eq 0 ] && error "Files to add required (use . for all)"
+    git add "$@" || error "Failed to stage files"
+    success "Staged files"
+}
+
+git_commit() {
+    local message="$1"
+    [ -z "$message" ] && error "Commit message required"
+    
+    git commit -m "$message" || error "Failed to commit"
+    success "Committed: $message"
+}
+
+git_log() {
+    local limit=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --limit)
+                limit="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1"
+                ;;
+        esac
+    done
+    
+    if [ -n "$limit" ]; then
+        git log -n "$limit" --oneline --decorate
+    else
+        git log -n 10 --oneline --decorate
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Pull Request Operations
+# ═══════════════════════════════════════════════════════════════════════════
+
+pr_create() {
+    local title=""
+    local head=""
+    local base=""
+    local body=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --title)
+                title="$2"
+                shift 2
+                ;;
+            --head)
+                head="$2"
+                shift 2
+                ;;
+            --base)
+                base="$2"
+                shift 2
+                ;;
+            --body)
+                body="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1"
+                ;;
+        esac
+    done
+    
+    [ -z "$title" ] && error "--title required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    # Default head to current branch
+    if [ -z "$head" ]; then
+        head=$(get_current_branch)
+    fi
+    
+    # Get default branch if base not specified
+    if [ -z "$base" ]; then
+        local repo_info
+        repo_info=$(api_call GET "/repos/$repo") || error "Failed to get repository info"
+        base=$(echo "$repo_info" | jq -r '.default_branch')
+    fi
+    
+    local payload
+    payload=$(jq -n \
+        --arg title "$title" \
+        --arg head "$head" \
+        --arg base "$base" \
+        --arg body "$body" \
+        '{
+            title: $title,
+            head: $head,
+            base: $base,
+            body: $body
+        }')
+    
+    local result
+    result=$(api_call POST "/repos/$repo/pulls" \
+        -H "Content-Type: application/json" \
+        -d "$payload") || error "Failed to create pull request"
+    
+    local pr_number
+    pr_number=$(echo "$result" | jq -r '.number')
+    local pr_url
+    pr_url=$(echo "$result" | jq -r '.html_url')
+    
+    success "Created pull request #$pr_number: $title"
+    echo "URL: $pr_url"
+}
+
+pr_list() {
+    local state="open"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --state)
+                state="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1"
+                ;;
+        esac
+    done
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/pulls?state=$state") || error "Failed to list pull requests"
+    
+    echo "$result" | jq -r '.[] | "#\(.number) \(.title) (\(.state)) - \(.html_url)"'
+}
+
+pr_show() {
+    local number="$1"
+    [ -z "$number" ] && error "Pull request number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/pulls/$number") || error "Failed to get pull request"
+    
+    echo "Pull Request #$number"
+    echo "Title: $(echo "$result" | jq -r '.title')"
+    echo "State: $(echo "$result" | jq -r '.state')"
+    echo "Author: $(echo "$result" | jq -r '.user.login')"
+    echo "Created: $(echo "$result" | jq -r '.created_at')"
+    echo "Updated: $(echo "$result" | jq -r '.updated_at')"
+    echo "Head: $(echo "$result" | jq -r '.head.ref')"
+    echo "Base: $(echo "$result" | jq -r '.base.ref')"
+    echo "URL: $(echo "$result" | jq -r '.html_url')"
+    echo ""
+    echo "Description:"
+    echo "$result" | jq -r '.body // "No description"'
+    
+    # Get commits
+    echo ""
+    echo "Commits:"
+    local commits
+    commits=$(api_call GET "/repos/$repo/pulls/$number/commits") || warn "Failed to get commits"
+    echo "$commits" | jq -r '.[] | "  \(.sha[0:7]) \(.commit.message | split("\n")[0])"'
+    
+    # Get files
+    echo ""
+    echo "Changed files:"
+    local files
+    files=$(api_call GET "/repos/$repo/pulls/$number/files") || warn "Failed to get files"
+    echo "$files" | jq -r '.[] | "  \(.filename) (+\(.additions)/-\(.deletions))"'
+    
+    # Get comments
+    echo ""
+    echo "Comments:"
+    local comments
+    comments=$(api_call GET "/repos/$repo/issues/$number/comments") || warn "Failed to get comments"
+    
+    local comment_count
+    comment_count=$(echo "$comments" | jq -r '. // [] | length')
+    
+    if [ "$comment_count" -eq 0 ]; then
+        echo "  No comments"
+    else
+        echo "$comments" | jq -r '. // [] | .[] | "\n  [\(.user.login)] \(.created_at)\n  \(.body)\n  ---"'
+    fi
+}
+
+pr_comment() {
+    local number="$1"
+    local message="$2"
+    
+    [ -z "$number" ] && error "Pull request number required"
+    [ -z "$message" ] && error "Comment message required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local payload
+    payload=$(jq -n --arg body "$message" '{body: $body}')
+    
+    api_call POST "/repos/$repo/issues/$number/comments" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null || error "Failed to add comment"
+    
+    success "Added comment to PR #$number"
+}
+
+pr_merge() {
+    local number="$1"
+    [ -z "$number" ] && error "Pull request number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local payload='{"Do": "squash"}'
+    
+    api_call POST "/repos/$repo/pulls/$number/merge" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null || error "Failed to merge pull request"
+    
+    success "Merged PR #$number (squash merge)"
+}
+
+pr_close() {
+    local number="$1"
+    [ -z "$number" ] && error "Pull request number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local payload='{"state": "closed"}'
+    
+    api_call PATCH "/repos/$repo/pulls/$number" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null || error "Failed to close pull request"
+    
+    success "Closed PR #$number"
+}
+
+pr_checkout() {
+    local number="$1"
+    [ -z "$number" ] && error "Pull request number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/pulls/$number") || error "Failed to get pull request"
+    
+    local head_ref
+    head_ref=$(echo "$result" | jq -r '.head.ref')
+    
+    git fetch origin "pull/$number/head:pr-$number" || error "Failed to fetch PR branch"
+    git switch "pr-$number" || error "Failed to switch to PR branch"
+    
+    success "Checked out PR #$number ($head_ref) as pr-$number"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Issue Operations
+# ═══════════════════════════════════════════════════════════════════════════
+
+issue_create() {
+    local title=""
+    local body=""
+    local labels=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --title)
+                title="$2"
+                shift 2
+                ;;
+            --body)
+                body="$2"
+                shift 2
+                ;;
+            --labels)
+                labels="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1"
+                ;;
+        esac
+    done
+    
+    [ -z "$title" ] && error "--title required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local payload
+    if [ -n "$labels" ]; then
+        IFS=',' read -ra label_array <<< "$labels"
+        payload=$(jq -n \
+            --arg title "$title" \
+            --arg body "$body" \
+            --argjson labels "$(printf '%s\n' "${label_array[@]}" | jq -R . | jq -s .)" \
+            '{title: $title, body: $body, labels: $labels}')
+    else
+        payload=$(jq -n \
+            --arg title "$title" \
+            --arg body "$body" \
+            '{title: $title, body: $body}')
+    fi
+    
+    local result
+    result=$(api_call POST "/repos/$repo/issues" \
+        -H "Content-Type: application/json" \
+        -d "$payload") || error "Failed to create issue"
+    
+    local issue_number
+    issue_number=$(echo "$result" | jq -r '.number')
+    local issue_url
+    issue_url=$(echo "$result" | jq -r '.html_url')
+    
+    success "Created issue #$issue_number: $title"
+    echo "URL: $issue_url"
+}
+
+issue_update() {
+    local number=""
+    local title=""
+    local body=""
+    local labels=""
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --title)
+                title="$2"
+                shift 2
+                ;;
+            --body)
+                body="$2"
+                shift 2
+                ;;
+            --labels)
+                labels="$2"
+                shift 2
+                ;;
+            -*)
+                error "Unknown option: $1"
+                ;;
+            *)
+                if [ -z "$number" ]; then
+                    number="$1"
+                else
+                    error "Unexpected argument: $1"
+                fi
+                shift
+                ;;
+        esac
+    done
+    
+    [ -z "$number" ] && error "Issue number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    # Build payload with only provided fields
+    local payload="{}"
+    if [ -n "$title" ]; then
+        payload=$(echo "$payload" | jq --arg title "$title" '. + {title: $title}')
+    fi
+    if [ -n "$body" ]; then
+        payload=$(echo "$payload" | jq --arg body "$body" '. + {body: $body}')
+    fi
+    if [ -n "$labels" ]; then
+        IFS=',' read -ra label_array <<< "$labels"
+        local labels_json
+        labels_json=$(printf '%s\n' "${label_array[@]}" | jq -R . | jq -s .)
+        payload=$(echo "$payload" | jq --argjson labels "$labels_json" '. + {labels: $labels}')
+    fi
+    
+    api_call PATCH "/repos/$repo/issues/$number" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null || error "Failed to update issue"
+    
+    success "Updated issue #$number"
+}
+
+issue_list() {
+    local state="open"
+    
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --state)
+                state="$2"
+                shift 2
+                ;;
+            *)
+                error "Unknown option: $1"
+                ;;
+        esac
+    done
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/issues?state=$state") || error "Failed to list issues"
+    
+    echo "$result" | jq -r '.[] | select(.pull_request == null) | "#\(.number) \(.title) (\(.state)) - \(.html_url)"'
+}
+
+issue_show() {
+    local number="$1"
+    [ -z "$number" ] && error "Issue number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/issues/$number") || error "Failed to get issue"
+    
+    echo "Issue #$number"
+    echo "Title: $(echo "$result" | jq -r '.title')"
+    echo "State: $(echo "$result" | jq -r '.state')"
+    echo "Author: $(echo "$result" | jq -r '.user.login')"
+    echo "Created: $(echo "$result" | jq -r '.created_at')"
+    echo "Updated: $(echo "$result" | jq -r '.updated_at')"
+    echo "Labels: $(echo "$result" | jq -r '([.labels // [] | .[].name] | join(", ")) // "None"')"
+    
+    local assignees
+    assignees=$(echo "$result" | jq -r '([.assignees // [] | .[].login] | join(", ")) // "None"')
+    echo "Assignees: $assignees"
+    
+    local milestone
+    milestone=$(echo "$result" | jq -r '.milestone.title // "None"')
+    echo "Milestone: $milestone"
+    
+    echo "URL: $(echo "$result" | jq -r '.html_url')"
+    echo ""
+    echo "Description:"
+    echo "$result" | jq -r '.body // "No description"'
+    
+    # Get comments
+    echo ""
+    echo "Comments:"
+    local comments
+    comments=$(api_call GET "/repos/$repo/issues/$number/comments") || warn "Failed to get comments"
+    
+    local comment_count
+    comment_count=$(echo "$comments" | jq -r '. // [] | length')
+    
+    if [ "$comment_count" -eq 0 ]; then
+        echo "  No comments"
+    else
+        echo "$comments" | jq -r '. // [] | .[] | "\n  [\(.user.login)] \(.created_at)\n  \(.body)\n  ---"'
+    fi
+}
+
+issue_comment() {
+    local number="$1"
+    local message="$2"
+    
+    [ -z "$number" ] && error "Issue number required"
+    [ -z "$message" ] && error "Comment message required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local payload
+    payload=$(jq -n --arg body "$message" '{body: $body}')
+    
+    api_call POST "/repos/$repo/issues/$number/comments" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null || error "Failed to add comment"
+    
+    success "Added comment to issue #$number"
+}
+
+issue_close() {
+    local number="$1"
+    [ -z "$number" ] && error "Issue number required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local payload='{"state": "closed"}'
+    
+    api_call PATCH "/repos/$repo/issues/$number" \
+        -H "Content-Type: application/json" \
+        -d "$payload" >/dev/null || error "Failed to close issue"
+    
+    success "Closed issue #$number"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Help Text
+# ═══════════════════════════════════════════════════════════════════════════
+
+show_help() {
+    cat << 'EOF'
+forgejo - Unified interface for Forgejo operations
+
+Usage: forgejo <command> [options]
+
+Repository Operations:
+  repo create <name> [--description "..."]
+  repo info <name>
+  repo list
+  repo import <source-url> <new-name> [--description "..."]
+  repo clone <repo-or-url>
+
+Code Operations:
+  push <branch>
+  switch <branch>
+  tag create <tag-name> [message]
+
+Git Workflow:
+  status
+  diff [file]
+  add <files...>
+  commit <message>
+  log [--limit N]
+
+Pull Request Operations:
+  pr create --title "..." [--head <branch>] [--base <branch>] [--body "..."]
+  pr list [--state open|closed|all]
+  pr show <number>
+  pr comment <number> <message>
+  pr merge <number>
+  pr close <number>
+  pr checkout <number>
+
+Issue Operations:
+  issue create --title "..." [--body "..."] [--labels label1,label2]
+  issue update <number> [--title "..."] [--body "..."] [--labels label1,label2]
+  issue list [--state open|closed|all]
+  issue show <number>
+  issue comment <number> <message>
+  issue close <number>
+
+Use 'forgejo <command> --help' for more information about a command.
+EOF
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Command Routing
+# ═══════════════════════════════════════════════════════════════════════════
+
+if [ $# -eq 0 ]; then
+    show_help
+    exit 0
+fi
+
+case "$1" in
+    --help|-h|help)
+        show_help
+        ;;
+    
+    # Repository operations
+    repo)
+        shift
+        case "${1:-}" in
+            create) shift; repo_create "$@" ;;
+            info) shift; repo_info "$@" ;;
+            list) shift; repo_list "$@" ;;
+            import) shift; repo_import "$@" ;;
+            clone) shift; repo_clone "$@" ;;
+            *) error "Unknown repo command: ${1:-}. Use 'forgejo --help' for usage." ;;
+        esac
+        ;;
+    
+    # Code operations
+    push) shift; code_push "$@" ;;
+    switch) shift; code_switch "$@" ;;
+    tag)
+        shift
+        case "${1:-}" in
+            create) shift; code_tag_create "$@" ;;
+            *) error "Unknown tag command: ${1:-}. Use 'forgejo --help' for usage." ;;
+        esac
+        ;;
+    
+    # Git workflow
+    status) shift; git_status "$@" ;;
+    diff) shift; git_diff "$@" ;;
+    add) shift; git_add "$@" ;;
+    commit) shift; git_commit "$@" ;;
+    log) shift; git_log "$@" ;;
+    
+    # Pull request operations
+    pr)
+        shift
+        case "${1:-}" in
+            create) shift; pr_create "$@" ;;
+            list) shift; pr_list "$@" ;;
+            show) shift; pr_show "$@" ;;
+            comment) shift; pr_comment "$@" ;;
+            merge) shift; pr_merge "$@" ;;
+            close) shift; pr_close "$@" ;;
+            checkout) shift; pr_checkout "$@" ;;
+            *) error "Unknown pr command: ${1:-}. Use 'forgejo --help' for usage." ;;
+        esac
+        ;;
+    
+    # Issue operations
+    issue)
+        shift
+        case "${1:-}" in
+            create) shift; issue_create "$@" ;;
+            update) shift; issue_update "$@" ;;
+            list) shift; issue_list "$@" ;;
+            show) shift; issue_show "$@" ;;
+            comment) shift; issue_comment "$@" ;;
+            close) shift; issue_close "$@" ;;
+            *) error "Unknown issue command: ${1:-}. Use 'forgejo --help' for usage." ;;
+        esac
+        ;;
+    
+    *)
+        error "Unknown command: $1. Use 'forgejo --help' for usage."
+        ;;
+esac
