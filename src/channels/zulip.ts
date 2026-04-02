@@ -15,6 +15,8 @@ import {
   setChannelSetting,
   deleteChannelSetting,
   getChatByJid,
+  getRegisteredGroup,
+  setRegisteredGroup,
 } from '../db.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -786,6 +788,9 @@ export class ZulipChannel implements Channel {
     // Normalize JID to handle resolved topics (strips ✔ prefix)
     const normalizedJid = normalizeZulipJid(jid);
 
+    // Check settings first (most permissive) - allows self-healing when DB
+    // has requires_trigger=1 but topic/stream is in auto-register settings
+
     // Check if this specific topic is registered
     const autoRegisterTopics = getChannelSettings(
       'zulip',
@@ -887,9 +892,10 @@ export class ZulipChannel implements Channel {
         templateGroup !== undefined ||
         context.triggerPattern.test(message.content);
 
-      // Inherit settings from template group if it exists, otherwise use defaults
+      // Inherit settings from template group if it exists
+      // If no template: default to requiresTrigger=false when user triggered via @mention
       trigger = templateGroup?.trigger ?? `@${context.assistantName}`;
-      requiresTrigger = templateGroup?.requiresTrigger ?? true;
+      requiresTrigger = templateGroup?.requiresTrigger ?? false;
     }
 
     if (!shouldAutoRegister) {
@@ -906,6 +912,11 @@ export class ZulipChannel implements Channel {
     const hash = jid.replace(/[^a-z0-9]+/g, '').substring(0, 12);
     const folderName =
       `zulip_${sanitizedStream}__${sanitizedTopic}_${hash}`.substring(0, 64);
+
+    logger.info(
+      { chatJid: normalizedJid, requiresTrigger, streamId },
+      'Auto-registering Zulip topic',
+    );
 
     return {
       shouldRegister: true,
@@ -949,15 +960,40 @@ export class ZulipChannel implements Channel {
     }
 
     try {
-      setChannelSetting('zulip', 'auto_register_topic', normalizedJid);
+      const existingGroup = getRegisteredGroup(normalizedJid);
 
-      logger.info({ chatJid: normalizedJid }, 'Topic registered');
+      if (existingGroup) {
+        // Already registered — update DB to disable trigger requirement
+        setRegisteredGroup(normalizedJid, {
+          ...existingGroup,
+          requiresTrigger: false,
+        });
 
-      return {
-        success: true,
-        message:
-          'Topic registered successfully. The agent will now respond to all messages in this topic without requiring a trigger.',
-      };
+        logger.info(
+          { chatJid: normalizedJid },
+          'Updated existing topic: trigger no longer required',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic updated. Agent will now respond to all messages without requiring @mention.',
+        };
+      } else {
+        // Not registered yet — add to settings so next message auto-registers
+        setChannelSetting('zulip', 'auto_register_topic', normalizedJid);
+
+        logger.info(
+          { chatJid: normalizedJid },
+          'Added topic to auto-register list',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic registered. Agent will respond to the next message without @mention.',
+        };
+      }
     } catch (err: any) {
       logger.error({ chatJid, err: err.message }, 'Failed to register topic');
       return {
@@ -988,15 +1024,40 @@ export class ZulipChannel implements Channel {
     }
 
     try {
+      const existingGroup = getRegisteredGroup(normalizedJid);
+
+      // Always remove from auto-register settings
       deleteChannelSetting('zulip', 'auto_register_topic', normalizedJid);
 
-      logger.info({ chatJid: normalizedJid }, 'Topic unregistered');
+      if (existingGroup) {
+        // Update DB to require trigger
+        setRegisteredGroup(normalizedJid, {
+          ...existingGroup,
+          requiresTrigger: true,
+        });
 
-      return {
-        success: true,
-        message:
-          'Topic unregistered successfully. The agent will now only respond when mentioned or triggered.',
-      };
+        logger.info(
+          { chatJid: normalizedJid },
+          'Updated existing topic: trigger now required',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic unregistered. Agent will now only respond when @mentioned.',
+        };
+      } else {
+        logger.info(
+          { chatJid: normalizedJid },
+          'Removed topic from auto-register list',
+        );
+
+        return {
+          success: true,
+          message:
+            'Topic unregistered successfully. The agent will now only respond when mentioned or triggered.',
+        };
+      }
     } catch (err: any) {
       logger.error({ chatJid, err: err.message }, 'Failed to unregister topic');
       return {

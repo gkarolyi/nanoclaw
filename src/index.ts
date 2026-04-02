@@ -305,7 +305,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
 
         try {
-          return await channel.registerTopic(chatJid);
+          const result = await channel.registerTopic(chatJid);
+
+          // Reload from DB to sync in-memory cache
+          if (result.success) {
+            const updated = getRegisteredGroup(chatJid);
+            if (updated) {
+              registeredGroups[chatJid] = updated;
+              logger.debug(
+                { chatJid, requiresTrigger: updated.requiresTrigger },
+                'Synced in-memory group state after registration',
+              );
+            }
+          }
+
+          return result;
         } catch (err: any) {
           logger.error(
             { chatJid, err: err.message },
@@ -327,7 +341,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
 
         try {
-          return await channel.unregisterTopic(chatJid);
+          const result = await channel.unregisterTopic(chatJid);
+
+          // Reload from DB to sync in-memory cache
+          if (result.success) {
+            const updated = getRegisteredGroup(chatJid);
+            if (updated) {
+              registeredGroups[chatJid] = updated;
+              logger.debug(
+                { chatJid, requiresTrigger: updated.requiresTrigger },
+                'Synced in-memory group state after unregistration',
+              );
+            }
+          }
+
+          return result;
         } catch (err: any) {
           logger.error(
             { chatJid, err: err.message },
