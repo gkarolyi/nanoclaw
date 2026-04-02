@@ -380,6 +380,15 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   };
 
   await channel.setTyping?.(chatJid, true);
+
+  // Zulip typing indicators expire after ~5s — refresh every 4s while agent runs
+  const TYPING_REFRESH_MS = 4000;
+  const typingInterval = channel.setTyping
+    ? setInterval(() => {
+        channel.setTyping!(chatJid, true).catch(() => {});
+      }, TYPING_REFRESH_MS)
+    : null;
+
   let hadError = false;
   let outputSentToUser = false;
 
@@ -410,6 +419,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   });
 
+  if (typingInterval) clearInterval(typingInterval);
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
 
