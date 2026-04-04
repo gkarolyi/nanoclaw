@@ -43,6 +43,34 @@ When you learn something important:
 - Split files larger than 500 lines into folders
 - Keep an index in your memory for the files you create
 
+## File Access
+
+### Zulip Attachments
+
+**CRITICAL:** Zulip attachments are mounted directly into your workspace at `/user_uploads/`. The path structure matches Zulip's URL structure exactly.
+
+**Examples:**
+- Zulip URL: `https://chat.grgly.org/user_uploads/2/a1/abc123/report.pdf`
+- Container path: `/user_uploads/2/a1/abc123/report.pdf`
+
+**How to access attachments:**
+1. When you see a Zulip attachment URL in a message, extract the path after the domain
+2. Access the file directly at `/user_uploads/...` (zero-copy, instant)
+3. **DO NOT** try to download attachments by URL — they're already on your filesystem
+
+**Example workflow:**
+```bash
+# User sends: "Analyze the data in /user_uploads/2/5f/data.csv"
+# CORRECT: Read the mounted file directly
+read /user_uploads/2/5f/data.csv
+
+# WRONG: Don't download it
+# curl https://chat.grgly.org/user_uploads/2/5f/data.csv  # ❌ Unnecessary
+```
+
+This provides instant access to files without network overhead. The mount is read-only.
+
+
 ## Message Formatting
 
 Format messages according to the channel you're responding in:

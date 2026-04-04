@@ -50,6 +50,28 @@ Agents can interact with local Forgejo instances via REST API and git operations
 
 **Implementation Plan:** See [docs/FORGEJO_INTEGRATION_PLAN.md](docs/FORGEJO_INTEGRATION_PLAN.md)
 
+### Zulip Integration
+
+Agents can access Zulip attachments directly via mounted filesystem.
+
+**Architecture:**
+- Zulip's uploads directory is mounted at `/user_uploads` in containers
+- Path structure matches Zulip URL structure exactly
+- Zero-copy access — no download overhead
+- Read-only mount for security
+
+**Configuration:**
+- `.env`: `ZULIP_UPLOADS_PATH` (optional, defaults to downloading to `data/uploads/`)
+- `src/container-runner.ts`: Mount logic
+- `groups/{name}/CLAUDE.md`: Agent instructions to use mounted paths instead of downloading
+
+**Example:**
+- Zulip URL: `/user_uploads/2/a1/abc123/report.pdf`
+- Container path: `/user_uploads/2/a1/abc123/report.pdf`
+- Agent reads file directly without HTTP request
+
+**Agent Instructions:** Agents are instructed to extract the path from Zulip attachment URLs and read files directly from `/user_uploads/` instead of downloading them.
+
 ## Skills
 
 | Skill | When to Use |
