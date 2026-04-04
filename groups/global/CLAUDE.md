@@ -145,7 +145,7 @@ forgejo push main
 Repository creation automatically:
 - Initializes with README and MIT license
 - Adds gergely as admin collaborator
-- Sets up Zulip webhook to route events to #git stream
+- Sets up Zulip webhook via proxy to route events to #git stream
 
 #### Feature Branch + Pull Request
 ```bash
@@ -213,7 +213,7 @@ forgejo repo import https://github.com/user/awesome-lib awesome-lib
 # - Sets up remotes (original as 'upstream', Forgejo as 'origin')
 # - Pushes all branches and tags
 # - Adds gergely as collaborator
-# - Sets up Zulip webhook
+# - Sets up Zulip webhook via proxy
 ```
 
 #### Work with Issues

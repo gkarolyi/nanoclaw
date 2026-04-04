@@ -14,9 +14,9 @@ NC='\033[0m' # No Color
 # Configuration
 FORGEJO_API_BASE="http://host.docker.internal:3001/forgejo/api/v1"
 FORGEJO_URL="${FORGEJO_URL:-https://git.grgly.org}"
-ZULIP_BASE_URL="${ZULIP_BASE_URL:-}"
-ZULIP_INCOMING_WEBHOOK_API_KEY="${ZULIP_INCOMING_WEBHOOK_API_KEY:-}"
-ZULIP_GIT_STREAM_ID="${ZULIP_GIT_STREAM_ID:-}"
+FORGEJO_WEBHOOK_PROXY_URL="${FORGEJO_WEBHOOK_PROXY_URL:-http://homelab_forgejo_zulip_proxy:8080}"
+FORGEJO_WEBHOOK_SECRET="${FORGEJO_WEBHOOK_SECRET:-}"
+ZULIP_GIT_STREAM="${ZULIP_GIT_STREAM:-git}"
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Helper Functions
@@ -182,21 +182,40 @@ repo_create() {
         echo "Added gergely as admin collaborator"
     fi
     
-    # Set up Zulip webhook
-    if [ -n "$ZULIP_BASE_URL" ] && [ -n "$ZULIP_INCOMING_WEBHOOK_API_KEY" ] && [ -n "$ZULIP_GIT_STREAM_ID" ]; then
-        local webhook_url="${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=${name}"
+    # Set up Zulip webhook via proxy
+    if [ -n "$FORGEJO_WEBHOOK_PROXY_URL" ]; then
+        local webhook_url="${FORGEJO_WEBHOOK_PROXY_URL}/?stream=${ZULIP_GIT_STREAM}&topic=${name}"
         local webhook_payload
-        webhook_payload=$(jq -n \
-            --arg url "$webhook_url" \
-            '{
-                type: "gitea",
-                active: true,
-                config: {
-                    url: $url,
-                    content_type: "json"
-                },
-                events: ["push", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"]
-            }')
+        
+        if [ -n "$FORGEJO_WEBHOOK_SECRET" ]; then
+            # Create webhook with HMAC secret
+            webhook_payload=$(jq -n \
+                --arg url "$webhook_url" \
+                --arg secret "$FORGEJO_WEBHOOK_SECRET" \
+                '{
+                    type: "gitea",
+                    active: true,
+                    config: {
+                        url: $url,
+                        content_type: "json",
+                        secret: $secret
+                    },
+                    events: ["push", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"]
+                }')
+        else
+            # Create webhook without HMAC secret
+            webhook_payload=$(jq -n \
+                --arg url "$webhook_url" \
+                '{
+                    type: "gitea",
+                    active: true,
+                    config: {
+                        url: $url,
+                        content_type: "json"
+                    },
+                    events: ["push", "pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"]
+                }')
+        fi
         
         if ! api_call POST "/repos/$username/$name/hooks" \
             -H "Content-Type: application/json" \

@@ -143,7 +143,7 @@ The agent will:
 
 ## Zulip + Forgejo Webhook Integration (Optional)
 
-To enable agents to respond to PR events automatically:
+To enable agents to respond to PR events automatically, webhooks route through a dedicated proxy that validates and forwards events to Zulip.
 
 ### 1. Configure Forgejo Webhook
 
@@ -155,27 +155,27 @@ In your Forgejo repository:
 
 1. Go to **Settings** → **Webhooks**
 2. Click **Add Webhook** → **Gitea**
-3. Set **Payload URL** to your Zulip incoming webhook URL
-   - Format: `https://your-zulip.domain/api/v1/external/gitea?api_key=...&stream=STREAM_ID&topic=REPO_NAME`
-   - Replace `STREAM_ID` with your Zulip stream ID (numeric, e.g., `6` for the git stream)
-   - Replace `REPO_NAME` with your repository name (e.g., `hello-world`) to avoid topic fragmentation
-4. Select events to trigger:
+3. Set **Payload URL** to: `http://homelab_forgejo_zulip_proxy:8080/?stream=STREAM_NAME&topic=REPO_NAME`
+   - Replace `STREAM_NAME` with your Zulip stream name (e.g., `git`)
+   - Replace `REPO_NAME` with your repository name (e.g., `togodo`) to avoid topic fragmentation
+   - Full example: `http://homelab_forgejo_zulip_proxy:8080/?stream=git&topic=togodo`
+4. Set **Secret** to your HMAC secret (same value as `FORGEJO_WEBHOOK_SECRET` env var)
+5. Select events to trigger:
    - Pull request opened/closed/edited
    - Pull request review comments
    - Push events (optional)
    - Issue events (optional)
-5. Click **Add Webhook**
+6. Click **Add Webhook**
 
 **Option B: Programmatic Setup (via API)**
 
-Agents can create webhooks programmatically using environment variables:
+The `forgejo` CLI automatically configures webhooks when creating repositories using these environment variables:
 
 **Required environment variables:**
-- `ZULIP_BASE_URL` — Your Zulip server URL
-- `ZULIP_INCOMING_WEBHOOK_API_KEY` — API key for the incoming webhook integration (for Forgejo to post to Zulip)
-- `ZULIP_GIT_STREAM_ID` — Numeric stream ID for git events
-
-**Example:**
+- `FORGEJO_WEBHOOK_PROXY_URL` — Webhook proxy URL (default: `http://homelab_forgejo_zulip_proxy:8080`)
+- `FORGEJO_WEBHOOK_SECRET` — HMAC secret for webhook validation
+- `ZULIP_GIT_STREAM` — Stream name for git events (default: `git`)
+**Manual API example:**
 ```bash
 curl -X POST "http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/hooks" \
   -H "Content-Type: application/json" \
@@ -183,8 +183,9 @@ curl -X POST "http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/h
     \"type\": \"gitea\",
     \"active\": true,
     \"config\": {
-      "url": "${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=REPO_NAME",
-      \"content_type\": \"json\"
+      \"url\": \"http://homelab_forgejo_zulip_proxy:8080/?stream=git&topic=REPO_NAME\",
+      \"content_type\": \"json\",
+      \"secret\": \"YOUR_HMAC_SECRET\"
     },
     \"events\": [\"push\", \"pull_request\", \"pull_request_review\", \"pull_request_review_comment\", \"issue_comment\"]
   }"
@@ -195,20 +196,21 @@ curl -X POST "http://host.docker.internal:3001/forgejo/api/v1/repos/OWNER/REPO/h
 By setting `&topic=REPO_NAME` in the webhook URL, all events for that repository will appear in a single topic.
 
 **Example:**
-- Webhook URL includes: `&stream=6&topic=hello-world` (where `6` is the git stream ID)
-- All events appear in: `#git > hello-world`
+- Webhook URL: `http://homelab_forgejo_zulip_proxy:8080/?stream=git&topic=togodo`
+- All events appear in: `#git > togodo`
 - Events include: pushes, PR opened/closed, PR comments, etc.
 ### 3. Agent Workflow
 
 When a PR review comment is posted:
 
-1. Forgejo sends webhook to Zulip
-2. Zulip posts event to topic (e.g., `#git > hello-world`)
-3. Agent sees the message in Zulip
-4. Agent reads PR details and review comments via Forgejo API
-5. Agent makes requested changes, pushes, and replies in Zulip
+1. Forgejo sends webhook to proxy with HMAC signature
+2. Proxy validates signature and forwards to Zulip
+3. Zulip posts event to topic (e.g., `#git > togodo`)
+4. Agent sees the message in Zulip
+5. Agent reads PR details and review comments via Forgejo API
+6. Agent makes requested changes, pushes, and replies in Zulip
 
-See [Zulip's Gitea integration docs](https://zulip.com/integrations/doc/gitea) for more details.
+The webhook proxy ensures all events are authenticated and properly formatted for Zulip.
 
 ## Troubleshooting
 

@@ -203,10 +203,11 @@ Unified error handling and HTTP status code checking.
 ### Automatic Webhook Setup
 
 ```bash
-# Set up Zulip webhook during repo creation
-if [ -n "$ZULIP_BASE_URL" ] && [ -n "$ZULIP_INCOMING_WEBHOOK_API_KEY" ] && [ -n "$ZULIP_GIT_STREAM_ID" ]; then
-    local webhook_url="${ZULIP_BASE_URL}/api/v1/external/gitea?api_key=${ZULIP_INCOMING_WEBHOOK_API_KEY}&stream=${ZULIP_GIT_STREAM_ID}&topic=${name}"
-    # ... create webhook via API
+# Set up Zulip webhook via proxy during repo creation
+if [ -n "$FORGEJO_WEBHOOK_PROXY_URL" ]; then
+    local webhook_url="${FORGEJO_WEBHOOK_PROXY_URL}/?stream=${ZULIP_GIT_STREAM}&topic=${name}"
+    # Create webhook with optional HMAC secret
+    # ... create webhook via API with secret if FORGEJO_WEBHOOK_SECRET is set
     if ! api_call POST "/repos/$username/$name/hooks" ...; then
         warn "Failed to set up Zulip webhook"
     fi
