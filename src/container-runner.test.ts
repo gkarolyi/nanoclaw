@@ -43,6 +43,7 @@ vi.mock('fs', async () => {
       readdirSync: vi.fn(() => []),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
+      cpSync: vi.fn(),
     },
   };
 });
@@ -89,6 +90,7 @@ vi.mock('child_process', async () => {
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import fs from 'fs';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -207,5 +209,196 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('skill sync', () => {
+  let spawnMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readdirSync).mockReturnValue([]);
+    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => false } as any);
+    vi.mocked(fs.cpSync).mockReset();
+    const cp = await import('child_process');
+    spawnMock = vi.mocked(cp.spawn);
+    spawnMock.mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function spawnContainer() {
+    const p = runContainerAgent(testGroup, testInput, () => {});
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    return p;
+  }
+
+  function getMountArgs(): string[] {
+    const args: string[] = spawnMock.mock.calls[0]?.[1] ?? [];
+    const mounts: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      if (args[i] === '-v' && args[i + 1]) mounts.push(args[i + 1]);
+    }
+    return mounts;
+  }
+
+  it('mounts built-in skills from container/skills/ as read-only bind mounts', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      String(p).includes('container/skills'),
+    );
+    vi.mocked(fs.readdirSync).mockImplementation((p) =>
+      String(p).includes('container/skills') ? (['agent-browser'] as any) : [],
+    );
+    vi.mocked(fs.statSync).mockImplementation(
+      (p) =>
+        ({
+          isDirectory: () => String(p).includes('agent-browser'),
+        }) as any,
+    );
+
+    await spawnContainer();
+
+    // Built-ins are mounted, not copied
+    expect(vi.mocked(fs.cpSync)).not.toHaveBeenCalled();
+    const mounts = getMountArgs();
+    expect(
+      mounts.some(
+        (m) =>
+          m.includes('agent-browser') &&
+          m.endsWith(':/home/node/.claude/skills/agent-browser:ro'),
+      ),
+    ).toBe(true);
+  });
+
+  it('mounts global skills as live read-only bind mounts', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      String(p).includes('global/skills'),
+    );
+    vi.mocked(fs.readdirSync).mockImplementation((p) =>
+      String(p).includes('global/skills') ? (['caveman'] as any) : [],
+    );
+    vi.mocked(fs.statSync).mockImplementation(
+      (p) =>
+        ({
+          isDirectory: () => String(p).includes('caveman'),
+        }) as any,
+    );
+
+    await spawnContainer();
+
+    expect(vi.mocked(fs.cpSync)).not.toHaveBeenCalled();
+    const mounts = getMountArgs();
+    expect(
+      mounts.some(
+        (m) =>
+          m.includes('caveman') &&
+          m.endsWith(':/home/node/.claude/skills/caveman:ro'),
+      ),
+    ).toBe(true);
+  });
+
+  it('mounts group-specific skills as live read-only bind mounts', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      String(p).includes('test-group/skills'),
+    );
+    vi.mocked(fs.readdirSync).mockImplementation((p) =>
+      String(p).includes('test-group/skills') ? (['my-skill'] as any) : [],
+    );
+    vi.mocked(fs.statSync).mockImplementation(
+      (p) =>
+        ({
+          isDirectory: () => String(p).includes('my-skill'),
+        }) as any,
+    );
+
+    await spawnContainer();
+
+    expect(vi.mocked(fs.cpSync)).not.toHaveBeenCalled();
+    const mounts = getMountArgs();
+    expect(
+      mounts.some(
+        (m) =>
+          m.includes('my-skill') &&
+          m.endsWith(':/home/node/.claude/skills/my-skill:ro'),
+      ),
+    ).toBe(true);
+  });
+
+  it('skips skill sources that do not exist', async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+
+    await spawnContainer();
+
+    const mounts = getMountArgs();
+    expect(mounts.some((m) => m.includes('/home/node/.claude/skills/'))).toBe(
+      false,
+    );
+  });
+
+  it('skips non-directory entries in skill source', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) =>
+      String(p).includes('container/skills'),
+    );
+    vi.mocked(fs.readdirSync).mockImplementation((p) =>
+      String(p).includes('container/skills')
+        ? (['README.md', 'agent-browser'] as any)
+        : [],
+    );
+    vi.mocked(fs.statSync).mockImplementation(
+      (p) =>
+        ({
+          isDirectory: () => String(p).includes('agent-browser'),
+        }) as any,
+    );
+
+    await spawnContainer();
+
+    expect(vi.mocked(fs.cpSync)).not.toHaveBeenCalled();
+    const mounts = getMountArgs();
+    const skillMounts = mounts.filter((m) =>
+      m.includes('/home/node/.claude/skills/'),
+    );
+    expect(skillMounts).toHaveLength(1);
+    expect(skillMounts[0]).toContain('agent-browser');
+  });
+
+  it('mounts all three skill sources when all exist', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      const s = String(p);
+      return (
+        s.includes('container/skills') ||
+        s.includes('global/skills') ||
+        s.includes('test-group/skills')
+      );
+    });
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      const s = String(p);
+      if (s.includes('container/skills')) return ['agent-browser'] as any;
+      if (s.includes('global/skills')) return ['caveman'] as any;
+      if (s.includes('test-group/skills')) return ['my-skill'] as any;
+      return [];
+    });
+    vi.mocked(fs.statSync).mockReturnValue({ isDirectory: () => true } as any);
+
+    await spawnContainer();
+
+    // Nothing copied — all mounted
+    expect(vi.mocked(fs.cpSync)).not.toHaveBeenCalled();
+
+    const mounts = getMountArgs();
+    expect(
+      mounts.some(
+        (m) =>
+          m.includes('agent-browser') &&
+          m.endsWith(':/home/node/.claude/skills/agent-browser:ro'),
+      ),
+    ).toBe(true);
+    expect(mounts.some((m) => m.includes('caveman'))).toBe(true);
+    expect(mounts.some((m) => m.includes('my-skill'))).toBe(true);
   });
 });
