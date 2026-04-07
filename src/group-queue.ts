@@ -1,9 +1,10 @@
-import { ChildProcess } from 'child_process';
+import { ChildProcess, exec } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 
 import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { logger } from './logger.js';
+import { CONTAINER_RUNTIME_BIN } from './container-runtime.js';
 
 interface QueuedTask {
   id: string;
@@ -191,6 +192,31 @@ export class GroupQueue {
     } catch {
       // ignore
     }
+  }
+
+  /**
+   * Interrupt the active container by sending SIGINT to its main process.
+   * Simulates pressing Escape in Claude Code — cancels the current tool/task
+   * without killing the container outright.
+   */
+  interrupt(groupJid: string): void {
+    const state = this.getGroup(groupJid);
+    if (!state.active || !state.containerName) return;
+
+    const containerName = state.containerName;
+    exec(
+      `${CONTAINER_RUNTIME_BIN} kill --signal SIGINT ${containerName}`,
+      { timeout: 5000 },
+      (err) => {
+        if (err) {
+          logger.warn(
+            { groupJid, containerName, err },
+            'Failed to interrupt container, falling back to closeStdin',
+          );
+          this.closeStdin(groupJid);
+        }
+      },
+    );
   }
 
   private async runForGroup(
