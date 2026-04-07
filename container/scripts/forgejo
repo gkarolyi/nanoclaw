@@ -13,6 +13,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 FORGEJO_API_BASE="http://host.docker.internal:3001/forgejo/api/v1"
+FORGEJO_GIT_BASE="http://host.docker.internal:3001/forgejo"
 FORGEJO_URL="${FORGEJO_URL:-https://git.grgly.org}"
 FORGEJO_WEBHOOK_PROXY_URL="${FORGEJO_WEBHOOK_PROXY_URL:-http://homelab_forgejo_zulip_proxy:8080}"
 FORGEJO_WEBHOOK_SECRET="${FORGEJO_WEBHOOK_SECRET:-}"
@@ -304,7 +305,7 @@ repo_import() {
     # Add Forgejo as origin
     local username
     username=$(get_username)
-    local forgejo_url="${FORGEJO_URL}/${username}/${new_name}.git"
+    local forgejo_url="${FORGEJO_GIT_BASE}/${username}/${new_name}.git"
     git remote add origin "$forgejo_url"
     
     # Push all branches and tags
@@ -326,7 +327,7 @@ repo_clone() {
         clone_url="$repo_or_url"
     else
         # Forgejo repo (owner/repo format)
-        clone_url="${FORGEJO_URL}/${repo_or_url}.git"
+        clone_url="${FORGEJO_GIT_BASE}/${repo_or_url}.git"
     fi
     
     git clone "$clone_url" || error "Failed to clone repository"
@@ -905,6 +906,74 @@ issue_close() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Wiki Operations
+# ═══════════════════════════════════════════════════════════════════════════
+
+wiki_list() {
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/wiki/pages") || error "Failed to list wiki pages"
+    
+    local page_count
+    page_count=$(echo "$result" | jq -r '. // [] | length')
+    
+    if [ "$page_count" -eq 0 ]; then
+        echo "No wiki pages found"
+    else
+        echo "$result" | jq -r '.[] | "\(.name)\t\(.title // .name)"' | \
+            while IFS=$'\t' read -r name title; do
+                echo "$name - $title"
+            done
+    fi
+}
+
+wiki_show() {
+    local page_title="$1"
+    [ -z "$page_title" ] && error "Page title required"
+    
+    local repo
+    repo=$(get_current_repo)
+    
+    local result
+    result=$(api_call GET "/repos/$repo/wiki/page/$page_title") || error "Failed to get wiki page"
+    
+    echo "Page: $(echo "$result" | jq -r '.title // .name')"
+    echo "Last updated: $(echo "$result" | jq -r '.updated_at // "Unknown"')"
+    echo ""
+    echo "Content:"
+    echo "$result" | jq -r '(.content_base64 // "" | @base64d) // "No content"'
+}
+
+wiki_clone() {
+    local repo="$1"
+    
+    if [ -z "$repo" ]; then
+        # Try to get from current directory
+        if git rev-parse --git-dir &>/dev/null; then
+            repo=$(get_current_repo)
+        else
+            error "Repository required (either run from a git repo or specify owner/repo)"
+        fi
+    fi
+    
+    local wiki_url="${FORGEJO_GIT_BASE}/${repo}.wiki.git"
+    
+    git clone "$wiki_url" || error "Failed to clone wiki repository"
+    
+    local repo_name="${repo##*/}"
+    success "Cloned wiki to ${repo_name}.wiki"
+    echo ""
+    echo "Edit .md files, then:"
+    echo "  cd ${repo_name}.wiki"
+    echo "  git add ."
+    echo "  git commit -m 'Update wiki'"
+    echo "  git push origin main"
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Help Text
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -949,6 +1018,16 @@ Issue Operations:
   issue show <number>
   issue comment <number> <message>
   issue close <number>
+
+Wiki Operations:
+  wiki list
+  wiki show <page-title>
+  wiki clone [owner/repo]    # clones wiki repo, then use git for edits
+  
+  After cloning, use git directly to edit:
+    cd <repo>.wiki
+    git add . && git commit -m "Update wiki"
+    git push origin main
 
 Use 'forgejo <command> --help' for more information about a command.
 EOF
@@ -1025,6 +1104,17 @@ case "$1" in
             comment) shift; issue_comment "$@" ;;
             close) shift; issue_close "$@" ;;
             *) error "Unknown issue command: ${1:-}. Use 'forgejo --help' for usage." ;;
+        esac
+        ;;
+    
+    # Wiki operations
+    wiki)
+        shift
+        case "${1:-}" in
+            list) shift; wiki_list "$@" ;;
+            show) shift; wiki_show "$@" ;;
+            clone) shift; wiki_clone "$@" ;;
+            *) error "Unknown wiki command: ${1:-}. Use 'forgejo --help' for usage." ;;
         esac
         ;;
     
