@@ -249,6 +249,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       runAgent: (prompt, onOutput) =>
         runAgent(group, prompt, chatJid, onOutput),
       closeStdin: () => queue.closeStdin(chatJid),
+      stopAgent: () => queue.interrupt(chatJid),
       advanceCursor: (ts) => {
         lastAgentTimestamp[chatJid] = ts;
         saveState();
@@ -642,7 +643,16 @@ async function startMessageLoop(): Promise<void> {
                     loadSenderAllowlist(),
                   )));
             if (isAuthorized) {
-              queue.closeStdin(chatJid);
+              const loopCmd = extractSessionCommand(
+                loopCmdMsg.content,
+                TRIGGER_PATTERN,
+              );
+              if (loopCmd === '/stop') {
+                // /stop sends SIGINT to the container (simulates Escape)
+                queue.interrupt(chatJid);
+              } else {
+                queue.closeStdin(chatJid);
+              }
             }
             // Enqueue so processGroupMessages handles auth + cursor advancement.
             // Don't pipe via IPC — slash commands need a fresh container with

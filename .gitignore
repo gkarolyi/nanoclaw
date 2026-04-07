@@ -17,6 +17,9 @@ groups/main/*
 groups/global/*
 !groups/main/CLAUDE.md
 !groups/global/CLAUDE.md
+!groups/global/skills/
+groups/global/skills/*
+!groups/global/skills/*/
 
 # Secrets
 *.keys.json

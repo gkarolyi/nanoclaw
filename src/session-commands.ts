@@ -16,6 +16,7 @@ export function extractSessionCommand(
   if (trimmed === '/register') return '/register';
   if (trimmed === '/unregister') return '/unregister';
   if (trimmed === '/backfill') return '/backfill';
+  if (trimmed === '/stop') return '/stop';
   if (trimmed === '/commands') return '/commands';
   if (trimmed === '/help') return '/commands'; // Alias for /commands
 
@@ -57,6 +58,8 @@ export interface SessionCommandDeps {
   registerTopic?: () => Promise<{ success: boolean; message: string }>;
   /** Unregister the current topic from receiving all messages without trigger. */
   unregisterTopic?: () => Promise<{ success: boolean; message: string }>;
+  /** Interrupt the currently running agent (simulates Escape). */
+  stopAgent?: () => void;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -178,6 +181,16 @@ export async function handleSessionCommand(opts: {
     return { handled: true, success: result.success };
   }
 
+  // Handle /stop command
+  if (command === '/stop') {
+    logger.info({ group: groupName }, 'Stop command');
+
+    deps.stopAgent?.();
+    await deps.sendMessage('Stopped.');
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
   // Handle /commands (and /help) command
   if (command === '/commands') {
     logger.info({ group: groupName }, 'Commands help requested');
@@ -193,6 +206,9 @@ export async function handleSessionCommand(opts: {
 
 • **/backfill** - Load previous messages from this topic into conversation context
   Example: \`/backfill\`
+
+• **/stop** - Interrupt the currently running agent (like pressing Escape)
+  Example: \`/stop\`
 
 • **/compact** - Compress conversation context to save memory (requires @mention)
   Example: \`@AssistantName /compact\`

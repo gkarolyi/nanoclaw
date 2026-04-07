@@ -22,11 +22,27 @@ vi.mock('fs', async () => {
   };
 });
 
+// Mock exec for interrupt tests
+const mockExec = vi.fn();
+vi.mock('child_process', async () => {
+  const actual = await vi.importActual<typeof import('child_process')>('child_process');
+  return {
+    ...actual,
+    exec: (...args: unknown[]) => mockExec(...args),
+  };
+});
+
+// Mock container-runtime for CONTAINER_RUNTIME_BIN
+vi.mock('./container-runtime.js', () => ({
+  CONTAINER_RUNTIME_BIN: 'docker',
+}));
+
 describe('GroupQueue', () => {
   let queue: GroupQueue;
 
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.clearAllMocks();
     queue = new GroupQueue();
   });
 
@@ -430,6 +446,116 @@ describe('GroupQueue', () => {
     expect(result).toBe(false);
 
     resolveTask!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  // --- interrupt ---
+
+  it('interrupt sends docker kill --signal SIGINT to active container', async () => {
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'nanoclaw-mygroup-1234',
+      'test-group',
+    );
+
+    mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: Function) => {
+      cb(null);
+    });
+
+    queue.interrupt('group1@g.us');
+
+    expect(mockExec).toHaveBeenCalledWith(
+      'docker kill --signal SIGINT nanoclaw-mygroup-1234',
+      { timeout: 5000 },
+      expect.any(Function),
+    );
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('interrupt falls back to closeStdin when exec fails', async () => {
+    const fs = await import('fs');
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    queue.registerProcess(
+      'group1@g.us',
+      {} as any,
+      'nanoclaw-mygroup-1234',
+      'test-group',
+    );
+
+    mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: Function) => {
+      cb(new Error('container not found'));
+    });
+
+    const writeFileSync = vi.mocked(fs.default.writeFileSync);
+    writeFileSync.mockClear();
+
+    queue.interrupt('group1@g.us');
+
+    // Allow the exec callback to fire
+    await vi.advanceTimersByTimeAsync(10);
+
+    const closeWrites = writeFileSync.mock.calls.filter(
+      (call) => typeof call[0] === 'string' && call[0].endsWith('_close'),
+    );
+    expect(closeWrites).toHaveLength(1);
+
+    resolveProcess!();
+    await vi.advanceTimersByTimeAsync(10);
+  });
+
+  it('interrupt is a no-op when no container is active', () => {
+    // No active container — should not throw or call exec
+    queue.interrupt('group1@g.us');
+    expect(mockExec).not.toHaveBeenCalled();
+  });
+
+  it('interrupt is a no-op when container has no name registered', async () => {
+    let resolveProcess: () => void;
+
+    const processMessages = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        resolveProcess = resolve;
+      });
+      return true;
+    });
+
+    queue.setProcessMessagesFn(processMessages);
+    queue.enqueueMessageCheck('group1@g.us');
+    await vi.advanceTimersByTimeAsync(10);
+
+    // Active but no registerProcess called — containerName is null
+    queue.interrupt('group1@g.us');
+    expect(mockExec).not.toHaveBeenCalled();
+
+    resolveProcess!();
     await vi.advanceTimersByTimeAsync(10);
   });
 

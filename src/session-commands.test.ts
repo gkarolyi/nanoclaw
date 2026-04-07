@@ -70,6 +70,22 @@ describe('extractSessionCommand', () => {
   it('detects /help as alias for /commands', () => {
     expect(extractSessionCommand('/help', trigger)).toBe('/commands');
   });
+
+  it('detects /stop as standalone command', () => {
+    expect(extractSessionCommand('/stop', trigger)).toBe('/stop');
+  });
+
+  it('does not detect /stop with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy /stop', trigger)).toBeNull();
+  });
+
+  it('rejects /stop with extra text', () => {
+    expect(extractSessionCommand('/stop now', trigger)).toBeNull();
+  });
+
+  it('handles whitespace around /stop', () => {
+    expect(extractSessionCommand('  /stop  ', trigger)).toBe('/stop');
+  });
 });
 
 function makeMsg(
@@ -384,5 +400,106 @@ describe('handleSessionCommand', () => {
     expect(deps.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('Available Session Commands'),
     );
+  });
+
+  it('/commands help includes /stop', async () => {
+    const deps = makeDeps();
+
+    await handleSessionCommand({
+      missedMessages: [makeMsg('/commands', { is_from_me: true })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('/stop'),
+    );
+  });
+
+  it('handles /stop: calls stopAgent, sends Stopped., advances cursor', async () => {
+    const stopAgent = vi.fn();
+    const deps = makeDeps({ stopAgent });
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/stop', { timestamp: '200' })],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(stopAgent).toHaveBeenCalledOnce();
+    expect(deps.sendMessage).toHaveBeenCalledWith('Stopped.');
+    expect(deps.advanceCursor).toHaveBeenCalledWith('200');
+    expect(deps.runAgent).not.toHaveBeenCalled();
+  });
+
+  it('handles /stop without stopAgent dep (no-op, still sends confirmation)', async () => {
+    const deps = makeDeps(); // no stopAgent
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/stop')],
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).toHaveBeenCalledWith('Stopped.');
+    expect(deps.advanceCursor).toHaveBeenCalled();
+    expect(deps.runAgent).not.toHaveBeenCalled();
+  });
+
+  it('handles /stop from is_from_me sender in non-main group', async () => {
+    const stopAgent = vi.fn();
+    const deps = makeDeps({ stopAgent });
+
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/stop', { is_from_me: true, timestamp: '300' })],
+      isMainGroup: false,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(stopAgent).toHaveBeenCalledOnce();
+    expect(deps.sendMessage).toHaveBeenCalledWith('Stopped.');
+    expect(deps.advanceCursor).toHaveBeenCalledWith('300');
+    expect(deps.runAgent).not.toHaveBeenCalled();
+  });
+
+  it('/stop does not process pre-stop messages through the agent', async () => {
+    const stopAgent = vi.fn();
+    const deps = makeDeps({ stopAgent });
+
+    const msgs = [
+      makeMsg('some work request', { timestamp: '99' }),
+      makeMsg('/stop', { timestamp: '100' }),
+    ];
+
+    const result = await handleSessionCommand({
+      missedMessages: msgs,
+      isMainGroup: true,
+      groupName: 'Test Group',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+
+    expect(result).toEqual({ handled: true, success: true });
+    expect(stopAgent).toHaveBeenCalledOnce();
+    expect(deps.sendMessage).toHaveBeenCalledWith('Stopped.');
+    // runAgent must NOT be called — /stop skips pre-command agent processing
+    expect(deps.runAgent).not.toHaveBeenCalled();
+    expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 });

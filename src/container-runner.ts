@@ -148,22 +148,39 @@ function buildVolumeMounts(
     );
   }
 
-  // Sync skills from container/skills/ into each group's .claude/skills/
-  const skillsSrc = path.join(process.cwd(), 'container', 'skills');
-  const skillsDst = path.join(groupSessionsDir, 'skills');
-  if (fs.existsSync(skillsSrc)) {
-    for (const skillDir of fs.readdirSync(skillsSrc)) {
-      const srcDir = path.join(skillsSrc, skillDir);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      const dstDir = path.join(skillsDst, skillDir);
-      fs.cpSync(srcDir, dstDir, { recursive: true });
-    }
-  }
   mounts.push({
     hostPath: groupSessionsDir,
     containerPath: '/home/node/.claude',
     readonly: false,
   });
+
+  // All skill sources are mounted directly as individual read-only bind mounts so
+  // any change to a skill file on the host is immediately visible in the container.
+  //
+  // Mount order: built-ins first, then global, then group-specific.
+  // A later mount at the same path overrides an earlier one, so group skills
+  // can shadow global skills, and global skills can shadow built-ins.
+  //
+  //   container/skills/{name}/       — built-in skills bundled with nanoclaw
+  //   groups/global/skills/{name}/   — available to ALL agents
+  //   groups/{folder}/skills/{name}/ — available to THIS group only
+  const skillSources = [
+    path.join(process.cwd(), 'container', 'skills'),
+    path.join(GROUPS_DIR, 'global', 'skills'),
+    path.join(resolveGroupFolderPath(group.folder), 'skills'),
+  ];
+  for (const skillsSrc of skillSources) {
+    if (!fs.existsSync(skillsSrc)) continue;
+    for (const skillDir of fs.readdirSync(skillsSrc)) {
+      const srcDir = path.join(skillsSrc, skillDir);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      mounts.push({
+        hostPath: srcDir,
+        containerPath: `/home/node/.claude/skills/${skillDir}`,
+        readonly: true,
+      });
+    }
+  }
 
   // Per-group mise installations and state (persistent across container restarts)
   // Agents can install tools via mise and they'll persist for this group
