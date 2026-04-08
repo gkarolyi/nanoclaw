@@ -462,7 +462,9 @@ describe('handleSessionCommand', () => {
     const deps = makeDeps({ stopAgent });
 
     const result = await handleSessionCommand({
-      missedMessages: [makeMsg('/stop', { is_from_me: true, timestamp: '300' })],
+      missedMessages: [
+        makeMsg('/stop', { is_from_me: true, timestamp: '300' }),
+      ],
       isMainGroup: false,
       groupName: 'Test Group',
       triggerPattern: trigger,

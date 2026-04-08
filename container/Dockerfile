@@ -3,7 +3,7 @@
 
 FROM node:22-slim
 
-# Install system dependencies for Chromium and git credential helper
+# Install system dependencies for Chromium, git, and language toolchains (Erlang, Ruby, Rust)
 RUN apt-get update && apt-get install -y \
     chromium \
     fonts-liberation \
@@ -25,6 +25,16 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     jq \
+    build-essential \
+    autoconf \
+    pkg-config \
+    libncurses-dev \
+    libssl-dev \
+    libssh-dev \
+    libyaml-dev \
+    libreadline-dev \
+    libffi-dev \
+    libgdbm-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install mise for package management

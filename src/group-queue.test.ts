@@ -25,7 +25,8 @@ vi.mock('fs', async () => {
 // Mock exec for interrupt tests
 const mockExec = vi.fn();
 vi.mock('child_process', async () => {
-  const actual = await vi.importActual<typeof import('child_process')>('child_process');
+  const actual =
+    await vi.importActual<typeof import('child_process')>('child_process');
   return {
     ...actual,
     exec: (...args: unknown[]) => mockExec(...args),
@@ -472,9 +473,11 @@ describe('GroupQueue', () => {
       'test-group',
     );
 
-    mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: Function) => {
-      cb(null);
-    });
+    mockExec.mockImplementation(
+      (_cmd: string, _opts: unknown, cb: Function) => {
+        cb(null);
+      },
+    );
 
     queue.interrupt('group1@g.us');
 
@@ -510,9 +513,11 @@ describe('GroupQueue', () => {
       'test-group',
     );
 
-    mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: Function) => {
-      cb(new Error('container not found'));
-    });
+    mockExec.mockImplementation(
+      (_cmd: string, _opts: unknown, cb: Function) => {
+        cb(new Error('container not found'));
+      },
+    );
 
     const writeFileSync = vi.mocked(fs.default.writeFileSync);
     writeFileSync.mockClear();
