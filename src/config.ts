@@ -13,6 +13,7 @@ const envConfig = readEnvFile([
   'CONTAINER_TIMEOUT',
   'CONTAINER_IMAGE',
   'IDLE_TIMEOUT',
+  'MAX_CONCURRENT_CONTAINERS',
 ]);
 
 export const ASSISTANT_NAME =
@@ -69,7 +70,12 @@ export const IDLE_TIMEOUT = parseInt(
 ); // 30min default — how long to keep container alive after last result
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
-  parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
+  parseInt(
+    process.env.MAX_CONCURRENT_CONTAINERS ||
+      envConfig.MAX_CONCURRENT_CONTAINERS ||
+      '5',
+    10,
+  ) || 5,
 );
 
 function escapeRegex(str: string): string {
