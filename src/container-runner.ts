@@ -225,27 +225,105 @@ function buildVolumeMounts(
               // context-mode sandboxes bash output into SQLite for on-demand retrieval.
               matcher: 'Bash',
               hooks: [
-                { type: 'command', command: '/home/node/.claude/hooks/rtk-rewrite.sh' },
-                { type: 'command', command: 'context-mode hook claude-code pretooluse' },
+                {
+                  type: 'command',
+                  command: '/home/node/.claude/hooks/rtk-rewrite.sh',
+                },
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code pretooluse',
+                },
               ],
             },
-            { matcher: 'Read',     hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
-            { matcher: 'Grep',     hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
-            { matcher: 'WebFetch', hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
-            { matcher: 'Agent',    hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
-            { matcher: 'Task',     hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
+            {
+              matcher: 'Read',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code pretooluse',
+                },
+              ],
+            },
+            {
+              matcher: 'Grep',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code pretooluse',
+                },
+              ],
+            },
+            {
+              matcher: 'WebFetch',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code pretooluse',
+                },
+              ],
+            },
+            {
+              matcher: 'Agent',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code pretooluse',
+                },
+              ],
+            },
+            {
+              matcher: 'Task',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code pretooluse',
+                },
+              ],
+            },
           ],
           PostToolUse: [
-            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code posttooluse' }] },
+            {
+              matcher: '',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code posttooluse',
+                },
+              ],
+            },
           ],
           PreCompact: [
-            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code precompact' }] },
+            {
+              matcher: '',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code precompact',
+                },
+              ],
+            },
           ],
           SessionStart: [
-            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code sessionstart' }] },
+            {
+              matcher: '',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code sessionstart',
+                },
+              ],
+            },
           ],
           UserPromptSubmit: [
-            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code userpromptsubmit' }] },
+            {
+              matcher: '',
+              hooks: [
+                {
+                  type: 'command',
+                  command: 'context-mode hook claude-code userpromptsubmit',
+                },
+              ],
+            },
           ],
         },
       },

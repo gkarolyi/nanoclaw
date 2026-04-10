@@ -73,7 +73,7 @@ RUN npm install -g context-mode && \
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
 RUN npx playwright install chromium-headless-shell --with-deps && \
-    SHELL_BIN=$(find /ms-playwright -name 'headless_shell' -type f | head -1) && \
+    SHELL_BIN=$(find /ms-playwright/chromium_headless_shell-* -type f -executable 2>/dev/null | head -1) && \
     echo "chromium-headless-shell: $SHELL_BIN" && \
     ln -sf "$SHELL_BIN" /usr/local/bin/chromium-headless-shell
 
