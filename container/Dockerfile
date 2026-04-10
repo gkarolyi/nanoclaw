@@ -49,6 +49,24 @@ RUN chmod +x /usr/local/bin/git-credential-helper.sh /usr/local/bin/forgejo && \
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN npm install -g agent-browser @anthropic-ai/claude-code
 
+# Install RTK (Rust Token Killer) — CLI proxy that intercepts shell command outputs
+# and reduces token usage by 60-99% via language-aware stripping.
+# Pinned to a specific release; musl static binary works on all glibc/musl systems.
+RUN curl -fsSL -o /tmp/rtk.tar.gz \
+    https://github.com/rtk-ai/rtk/releases/download/v0.35.0/rtk-x86_64-unknown-linux-musl.tar.gz \
+  && tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin \
+  && rm /tmp/rtk.tar.gz \
+  && rtk --version
+
+# Install context-mode — MCP server that intercepts tool outputs (Read, Bash, Grep,
+# WebFetch) and stores them in SQLite, letting Claude retrieve only what's needed.
+# better-sqlite3 is a native addon; pre-build it now so containers start cleanly.
+RUN npm install -g context-mode && \
+    mkdir -p /tmp/ctx-prebuild && \
+    cd /tmp/ctx-prebuild && \
+    context-mode --version 2>/dev/null || true && \
+    rm -rf /tmp/ctx-prebuild
+
 # Install Playwright's chromium-headless-shell into a shared directory.
 # --with-deps auto-installs required system libraries (replaces the manual lib list).
 # chromium-headless-shell omits the full GUI browser binary (~36% size reduction).

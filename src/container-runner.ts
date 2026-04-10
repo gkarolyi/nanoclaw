@@ -28,6 +28,65 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+
+// RTK (Rust Token Killer) Claude Code hook — rewrites Bash commands to use RTK for
+// token savings. Sourced verbatim from rtk-ai/rtk hooks/claude/rtk-rewrite.sh v3.
+// Placed into .claude/hooks/ at container startup since the entire .claude/ dir is
+// bind-mounted (baking it into the image would shadow it at runtime).
+const RTK_HOOK_SCRIPT = `#!/usr/bin/env bash
+# rtk-hook-version: 3
+# RTK Claude Code hook — rewrites commands to use rtk for token savings.
+# Requires: rtk >= 0.23.0, jq
+
+if ! command -v jq &>/dev/null; then
+  echo "[rtk] WARNING: jq is not installed..." >&2
+  exit 0
+fi
+
+if ! command -v rtk &>/dev/null; then
+  echo "[rtk] WARNING: rtk is not installed or not in PATH..." >&2
+  exit 0
+fi
+
+RTK_VERSION=$(rtk --version 2>/dev/null | grep -oE '[0-9]+\\.[0-9]+\\.[0-9]+' | head -1)
+if [ -n "$RTK_VERSION" ]; then
+  MAJOR=$(echo "$RTK_VERSION" | cut -d. -f1)
+  MINOR=$(echo "$RTK_VERSION" | cut -d. -f2)
+  if [ "$MAJOR" -eq 0 ] && [ "$MINOR" -lt 23 ]; then
+    echo "[rtk] WARNING: rtk $RTK_VERSION is too old (need >= 0.23.0)..." >&2
+    exit 0
+  fi
+fi
+
+INPUT=$(cat)
+CMD=$(echo "$INPUT" | jq -r '.tool_input.command // empty')
+
+if [ -z "$CMD" ]; then
+  exit 0
+fi
+
+REWRITTEN=$(rtk rewrite "$CMD" 2>/dev/null)
+EXIT_CODE=$?
+
+case $EXIT_CODE in
+  0) [ "$CMD" = "$REWRITTEN" ] && exit 0 ;;
+  1) exit 0 ;;
+  2) exit 0 ;;
+  3) ;;
+  *) exit 0 ;;
+esac
+
+ORIGINAL_INPUT=$(echo "$INPUT" | jq -c '.tool_input')
+UPDATED_INPUT=$(echo "$ORIGINAL_INPUT" | jq --arg cmd "$REWRITTEN" '.command = $cmd')
+
+if [ "$EXIT_CODE" -eq 3 ]; then
+  jq -n --argjson updated "$UPDATED_INPUT" \\
+    '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": $updated}}'
+else
+  jq -n --argjson updated "$UPDATED_INPUT" \\
+    '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow", "permissionDecisionReason": "RTK auto-rewrite", "updatedInput": $updated}}'
+fi
+`;
 import { validateAdditionalMounts } from './mount-security.js';
 import { RegisteredGroup } from './types.js';
 
@@ -124,29 +183,76 @@ function buildVolumeMounts(
     '.claude',
   );
   fs.mkdirSync(groupSessionsDir, { recursive: true });
+
+  // Write RTK hook script into .claude/hooks/ so it's available inside the container.
+  // The entire .claude/ dir is bind-mounted, so the hook must live here rather than
+  // being baked into the image (the image path would be shadowed by the mount).
+  const hooksDir = path.join(groupSessionsDir, 'hooks');
+  fs.mkdirSync(hooksDir, { recursive: true });
+  const rtkHookPath = path.join(hooksDir, 'rtk-rewrite.sh');
+  fs.writeFileSync(rtkHookPath, RTK_HOOK_SCRIPT);
+  fs.chmodSync(rtkHookPath, 0o755);
+
+  // Always write settings.json so new configuration (MCP servers, hooks) is applied
+  // to all groups on the next container run, not just freshly-created sessions.
   const settingsFile = path.join(groupSessionsDir, 'settings.json');
-  if (!fs.existsSync(settingsFile)) {
-    fs.writeFileSync(
-      settingsFile,
-      JSON.stringify(
-        {
-          env: {
-            // Enable agent swarms (subagent orchestration)
-            // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
-            CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
-            // Load CLAUDE.md from additional mounted directories
-            // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
-            CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
-            // Enable Claude's memory feature (persists user preferences between sessions)
-            // https://code.claude.com/docs/en/memory#manage-auto-memory
-            CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+  fs.writeFileSync(
+    settingsFile,
+    JSON.stringify(
+      {
+        env: {
+          // Enable agent swarms (subagent orchestration)
+          // https://code.claude.com/docs/en/agent-teams#orchestrate-teams-of-claude-code-sessions
+          CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1',
+          // Load CLAUDE.md from additional mounted directories
+          // https://code.claude.com/docs/en/memory#load-memory-from-additional-directories
+          CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD: '1',
+          // Enable Claude's memory feature (persists user preferences between sessions)
+          // https://code.claude.com/docs/en/memory#manage-auto-memory
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: '0',
+        },
+        // context-mode MCP server: intercepts Read/Bash/Grep/WebFetch outputs into
+        // SQLite, dramatically reducing context window usage in long sessions.
+        mcpServers: {
+          'context-mode': {
+            command: 'context-mode',
           },
         },
-        null,
-        2,
-      ) + '\n',
-    );
-  }
+        hooks: {
+          PreToolUse: [
+            {
+              // RTK rewrites bash commands to use token-efficient equivalents.
+              // context-mode sandboxes bash output into SQLite for on-demand retrieval.
+              matcher: 'Bash',
+              hooks: [
+                { type: 'command', command: '/home/node/.claude/hooks/rtk-rewrite.sh' },
+                { type: 'command', command: 'context-mode hook claude-code pretooluse' },
+              ],
+            },
+            { matcher: 'Read',     hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
+            { matcher: 'Grep',     hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
+            { matcher: 'WebFetch', hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
+            { matcher: 'Agent',    hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
+            { matcher: 'Task',     hooks: [{ type: 'command', command: 'context-mode hook claude-code pretooluse' }] },
+          ],
+          PostToolUse: [
+            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code posttooluse' }] },
+          ],
+          PreCompact: [
+            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code precompact' }] },
+          ],
+          SessionStart: [
+            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code sessionstart' }] },
+          ],
+          UserPromptSubmit: [
+            { matcher: '', hooks: [{ type: 'command', command: 'context-mode hook claude-code userpromptsubmit' }] },
+          ],
+        },
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 
   mounts.push({
     hostPath: groupSessionsDir,
